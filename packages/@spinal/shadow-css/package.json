@@ -1,0 +1,16 @@
+{
+  "name": "@spinal/shadow-css",
+  "version": "1.0.1",
+  "description": "",
+  "exports": {
+    ".": "./index.js", 
+    "./spinal-lift.css": "./spinal-lift.css" 
+  },
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "MIT",
+  "type": "module"
+}

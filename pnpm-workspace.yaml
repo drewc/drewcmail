@@ -1,0 +1,7 @@
+packages:
+  - packages/@spinal/shadow-css
+  - packages/*
+
+# protobufjs's postinstall only checks versions: not needed
+allowBuilds:
+  protobufjs: false

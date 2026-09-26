@@ -1,0 +1,12 @@
+@import "tailwindcss";
+
+/* Components are scanned for class names by Tailwind's automatic source detection. */
+
+/* `dark:` follows the host's data-theme (set by BaseElement from the system scheme):
+   a class or media query on <html> is not what a shadow root sees. */
+@custom-variant dark (:host([data-theme=dark]) &);
+
+@layer base {
+  :host { display: block; }
+  :host([hidden]) { display: none; }
+}

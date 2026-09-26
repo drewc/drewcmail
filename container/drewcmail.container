@@ -1,0 +1,20 @@
+# Quadlet unit: run drewcmail as a systemd user service.
+#   cp container/drewcmail.container ~/.config/containers/systemd/
+#   systemctl --user daemon-reload && systemctl --user start drewcmail
+[Unit]
+Description=drewcmail — notmuch web mail client
+
+[Container]
+Image=localhost/drewcmail
+ContainerName=drewcmail
+UserNS=keep-id:uid=1000,gid=1000
+PublishPort=127.0.0.1:8025:8025
+Volume=%h/.local/share/drewcmail/mail:/mail:Z
+Volume=%h/.config/drewcmail:/config:Z
+Environment=SYNC_INTERVAL=300
+
+[Service]
+Restart=on-failure
+
+[Install]
+WantedBy=default.target
