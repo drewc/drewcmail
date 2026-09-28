@@ -1,5 +1,7 @@
 # @drewc/mail
 
+A webapp for email using notmuch. Supports Gmail, Proton and IMAP. MIT licensed (`LICENSE`).
+
 I want to make a webapp mail client that uses notmuchmail and lives in podman. It should interact with external services. It should be using Lit and Tailwind CSS and fontawsome. Because lit componets use shadowdom we should copy the package from ~/src/ecm-live/app/spa/packages and use it. Make a package.json with "@drewc/mail" as the name.
 
 ---
