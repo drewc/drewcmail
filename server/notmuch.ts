@@ -63,7 +63,8 @@ export function reply(messageId: string, replyTo: 'all' | 'sender' = 'all') {
   return json<unknown>(['reply', ...FORMAT, `--reply-to=${replyTo}`, '--', idQuery(messageId)])
 }
 
-const TAG_RE = /^[^\s"()]+$/
+/** Gmail labels become tags as they are, spaces included ("Maxwell Claims"); no quotes, control characters or edge spaces */
+const TAG_RE = /^[^\s"\x00-\x1f](?:[^"\x00-\x1f]*[^\s"\x00-\x1f])?$/
 export function checkTags(tags: string[]) {
   const bad = tags.find(t => !TAG_RE.test(t))
   if (bad !== undefined) throw new BadRequest(`bad tag: ${JSON.stringify(bad)}`)

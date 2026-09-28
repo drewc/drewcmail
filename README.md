@@ -196,6 +196,7 @@ HTML mail is shown in a sandboxed iframe (no scripts, CSP) with remote images bl
 | `GET /api/filters` | the filters |
 | `POST /api/filters {filter: {id?, name, query, add, remove, criteria?}, apply?}` | add/replace (writes afew's config); `apply` also tags the mail matching now |
 | `DELETE /api/filters/:id` | remove a filter (tags already applied stay) |
+| `GET /api/activity` | what the server is doing now — sync steps, Gmail pushes/pulls with lieer's progress, IMAP syncs, Bridge syncing, work waiting its turn — and the last sync's result |
 | `GET/POST /api/sync` | state / run gmi push (all accounts), gmi pull (all) + mbsync + notmuch new |
 | `GET /api/proton` | Bridge: on/off, running, version, ports, users with sync progress |
 | `POST /api/proton/enabled {enabled}` | start / stop Bridge (remembered) |

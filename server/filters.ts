@@ -50,7 +50,7 @@ export function afewConfig(filters: Filter[]) {
     `[Filter.${i}]`,
     `message = ${iniValue(f.name || f.query)}`,
     `query = ${iniValue(f.query)}`,
-    `tags = ${[...f.add.map(t => `+${t}`), ...f.remove.map(t => `-${t}`)].join(';')}`,
+    `tags = ${iniValue([...f.add.map(t => `+${t}`), ...f.remove.map(t => `-${t}`)].join(';'))}`,
   ].join('\n'))
   return `# written by drewcmail from ${FILTERS_FILE} — edit filters in the web app\n\n${sections.join('\n\n')}\n`
 }

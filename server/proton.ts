@@ -5,6 +5,7 @@ import { checkServerIdentity } from 'node:tls'
 import { fileURLToPath } from 'node:url'
 import * as grpc from '@grpc/grpc-js'
 import * as protoLoader from '@grpc/proto-loader'
+import * as activity from './activity.ts'
 import * as imap from './imap.ts'
 import * as notmuch from './notmuch.ts'
 import { BadRequest } from './notmuch.ts'
@@ -58,6 +59,8 @@ let settings: Settings | undefined
 let version: string | undefined
 const output: string[] = []
 const progress = new Map<string, number>()
+/** Bridge's syncs in progress, as activities (per user) */
+const syncing = new Map<string, ReturnType<typeof activity.begin>>()
 /** called when Bridge has new mail for us (a sync of its own finished): mail.ts syncs */
 let onMail: () => void = () => {}
 export const whenMailArrives = (fn: () => void) => { onMail = fn }
@@ -241,9 +244,21 @@ function onEvent(e: Event) {
       return
     }
     case 'user':
-      if (what === 'syncProgressEvent') progress.set(String(body.userID), Number(body.progress))
-      if (what === 'syncStartedEvent') progress.set(String(body.userID), 0)
-      if (what === 'syncFinishedEvent') { progress.delete(String(body.userID)); onMail() }
+      if (what === 'syncProgressEvent') {
+        progress.set(String(body.userID), Number(body.progress))
+        syncing.get(String(body.userID))?.set(`${Math.floor(Number(body.progress) * 100)}%`)
+      }
+      if (what === 'syncStartedEvent') {
+        progress.set(String(body.userID), 0)
+        syncing.get(String(body.userID))?.end()
+        syncing.set(String(body.userID), activity.begin('Proton Mail Bridge sync'))
+      }
+      if (what === 'syncFinishedEvent') {
+        progress.delete(String(body.userID))
+        syncing.get(String(body.userID))?.end()
+        syncing.delete(String(body.userID))
+        onMail()
+      }
       if (what === 'userChanged' || what === 'toggleSplitModeFinished') reconcile().catch(e => console.error('proton:', (e as Error).message))
       if (what === 'userBadEvent') lastError = `Bridge: ${body.errorMessage}`
       return

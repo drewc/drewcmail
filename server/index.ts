@@ -9,6 +9,7 @@ import * as gmail from './gmail.ts'
 import * as imap from './imap.ts'
 import * as proton from './proton.ts'
 import * as filters from './filters.ts'
+import * as activity from './activity.ts'
 import { ExecError } from './exec.ts'
 
 /**
@@ -144,6 +145,8 @@ route('DELETE', '/api/filters/:id', async (req) => { await filters.remove(req.pa
 route('POST', '/api/send', async (req) => send(await readJson<Outgoing>(req)))
 
 route('GET', '/api/sync', async () => syncState)
+/** what is running now (and queued), and how the last sync went — for the app's spinner */
+route('GET', '/api/activity', async () => ({ activity: activity.list(), sync: syncState }))
 route('POST', '/api/sync', async (req) => {
   const { fetch } = await readJson<{ fetch?: boolean }>(req)
   return sync({ fetch: fetch !== false })
@@ -262,7 +265,8 @@ const server = http.createServer(async (req_, res) => {
 server.listen(PORT, HOST, () => console.log(`drewcmail on http://${HOST}:${PORT} (static: ${STATIC_DIR}, auth: ${AUTH ? 'basic' : 'none'})`))
 
 proton.boot().catch(e => console.error('proton:', (e as Error).message))
-for (const sig of ['SIGINT', 'SIGTERM'] as const) process.on(sig, () => { proton.stop().finally(() => server.close(() => process.exit(0))) })
+// stop Bridge, then exit — without waiting for idle keep-alive connections (open tabs), which close() would
+for (const sig of ['SIGINT', 'SIGTERM'] as const) process.on(sig, () => { proton.stop().finally(() => { server.closeAllConnections(); server.close(() => process.exit(0)) }) })
 
 // index at start (creates the database on first run), then fetch every SYNC_INTERVAL seconds
 sync({ fetch: false }).then(s => console.log('notmuch new:', s.ok ? 'ok' : s.error))

@@ -4,6 +4,7 @@ import * as gmail from './gmail.ts'
 import * as imap from './imap.ts'
 import * as proton from './proton.ts'
 import * as filters from './filters.ts'
+import * as activity from './activity.ts'
 import { BadRequest } from './notmuch.ts'
 
 /**
@@ -16,10 +17,15 @@ import { BadRequest } from './notmuch.ts'
 export type SyncState = { running: boolean; last?: string; ok?: boolean; error?: string }
 export const syncState: SyncState = { running: false }
 
-/** lieer and notmuch must not run over each other: everything that touches the database queues here */
+/**
+ * lieer and notmuch must not run over each other: everything that touches the database
+ * queues here — shown as waiting (`what`) until its turn
+ */
 let queue: Promise<unknown> = Promise.resolve()
-function exclusive<T>(fn: () => Promise<T>): Promise<T> {
-  const run = queue.then(fn, fn)
+function exclusive<T>(what: string, fn: () => Promise<T>): Promise<T> {
+  const waiting = activity.begin(what, { waiting: true })
+  const start = () => { waiting.end(); return fn() }
+  const run = queue.then(start, start)
   queue = run.catch(() => {})
   return run
 }
@@ -28,7 +34,7 @@ let current: Promise<SyncState> | null = null
 
 /** fetch (Gmail, then IMAP) and index; concurrent calls share one run */
 export function sync({ fetch = true } = {}): Promise<SyncState> {
-  current ??= exclusive(async () => {
+  current ??= exclusive('Sync', async () => {
     syncState.running = true
     const errors: string[] = []
     if (fetch) {
@@ -36,10 +42,12 @@ export function sync({ fetch = true } = {}): Promise<SyncState> {
       await imap.syncAll(proton.skipReason).catch(e => errors.push((e as Error).message))
     }
     try {
-      await notmuch.indexNew()
-      await notmuch.tagNew(await imap.newMailRules())
+      await activity.track('Indexing new mail (notmuch new)', () => notmuch.indexNew())
+      await activity.track('Tagging new mail', async () => notmuch.tagNew(await imap.newMailRules()))
       // the user's filters (afew) see fresh mail after the folder rules and before it stops being new
-      if (await filters.runNew().catch(e => { errors.push(`filters: ${(e as Error).message}`); return false })) schedulePush()
+      const filtered = await activity.track('Filters (afew)', () => filters.runNew())
+        .catch(e => { errors.push(`filters: ${(e as Error).message}`); return false })
+      if (filtered) schedulePush()
       await notmuch.doneNew()
     } catch (e) { errors.push((e as Error).message) }
     Object.assign(syncState, { running: false, last: new Date().toISOString(), ok: !errors.length, error: errors.join('\n') || undefined })
@@ -54,7 +62,7 @@ let pushTimer: NodeJS.Timeout | undefined
 export function schedulePush() {
   clearTimeout(pushTimer)
   pushTimer = setTimeout(() => {
-    exclusive(async () => { if ((await gmail.accounts()).some(a => a.authorized)) await gmail.syncAll('push') })
+    exclusive('Push tag changes to Gmail', async () => { if ((await gmail.accounts()).some(a => a.authorized)) await gmail.syncAll('push') })
       .catch(e => console.error('gmail push:', (e as Error).message))
   }, 5000)
 }

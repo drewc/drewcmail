@@ -16,4 +16,8 @@ specific to working here with Claude Code.
 - UI checks with headless Chromium over CDP: start it from a script file with its own `--user-data-dir` and kill it
   by PID — `pkill -f <pattern>` from the Bash tool matches the tool's own shell. `Page.navigate` to a URL that
   differs only in the hash does not reload the page.
-- Git: branch `main`; commit only when asked. `dist/` and `node_modules/` are ignored, `.spinal/` is committed.
+- Git: branch `main`; commit and push only when asked. `dist/` and `node_modules/` are ignored, `.spinal/` is committed.
+  `origin` is `ssh://git@git.aufin.net:2222/drewc/drewcmail.git`, reached through the user's ssh-agent (as in
+  ../ecm-live): this shell may start without `SSH_AUTH_SOCK`, so set it on the command —
+  `SSH_AUTH_SOCK="$XDG_RUNTIME_DIR/ssh-agent.socket" git push origin main`. `publickey` / "no identities" means the key
+  isn't loaded: ask the user to run `ssh-add`; don't look for other keys.

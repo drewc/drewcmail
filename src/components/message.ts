@@ -43,6 +43,53 @@ export class MailMessage extends BaseElement {
   @state() private remote = false
   @state() private details = false
   @state() private addingTag = false
+  /** the ⋮ menu by the date: reply, reply all, forward, add tag */
+  @state() private menu = false
+
+  /** a click elsewhere closes it, and so does another message's menu opening (its click stops short of window) */
+  private closeMenu = (e: Event) => { if ((e as CustomEvent).detail !== this) this.menu = false }
+
+  connectedCallback() {
+    super.connectedCallback()
+    window.addEventListener('click', this.closeMenu)
+    window.addEventListener('mail-message-menu', this.closeMenu)
+  }
+
+  disconnectedCallback() {
+    window.removeEventListener('click', this.closeMenu)
+    window.removeEventListener('mail-message-menu', this.closeMenu)
+    super.disconnectedCallback()
+  }
+
+  private toggleMenu(e: Event) {
+    e.stopPropagation()   // not the header's click, which folds the message
+    window.dispatchEvent(new CustomEvent('mail-message-menu', { detail: this }))
+    this.menu = !this.menu
+    if (this.menu) this.updateComplete.then(() => this.renderRoot.querySelector<HTMLElement>('[role=menuitem]')?.focus())
+  }
+
+  private renderMenu() {
+    const item = (icon: string, text: string, act: () => void) => html`
+      <button role="menuitem" class="flex w-full items-center gap-3 px-3 py-1.5 text-left text-sm whitespace-nowrap hover:bg-slate-100 focus:bg-slate-100 focus:outline-none dark:hover:bg-slate-700 dark:focus:bg-slate-700"
+              @click=${() => { this.menu = false; act() }}><i class="${fa(icon)} w-4 text-center text-slate-500"></i>${text}</button>`
+    return html`
+      <div role="menu" @click=${(e: Event) => e.stopPropagation()}
+           @keydown=${(e: KeyboardEvent) => {
+             if (e.key === 'Escape') { e.stopPropagation(); this.menu = false; return }
+             if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return
+             e.preventDefault()
+             const items = [...this.renderRoot.querySelectorAll<HTMLElement>('[role=menuitem]')]
+             const at = items.indexOf(this.shadowRoot?.activeElement as HTMLElement)
+             items[(at + (e.key === 'ArrowDown' ? 1 : items.length - 1)) % items.length]?.focus()
+           }}
+           class="absolute top-full right-0 z-30 mt-1 w-44 rounded-lg border border-slate-200 bg-white py-1 text-slate-700 shadow-xl dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200">
+        ${item('reply', 'Reply', () => this.reply('sender'))}
+        ${item('reply-all', 'Reply all', () => this.reply('all'))}
+        ${item('share', 'Forward', () => this.forward())}
+        <hr class="my-1 border-slate-200 dark:border-slate-700">
+        ${item('tag', 'Add tag', () => { this.addingTag = true })}
+      </div>`
+  }
 
   private get tags() { return this.message.tags.filter(t => !HIDDEN_TAGS.has(t) || t === 'unread') }
 
@@ -141,7 +188,8 @@ export class MailMessage extends BaseElement {
   private addTag(e: Event) {
     e.preventDefault()
     const input = (e.target as HTMLFormElement).elements.namedItem('tag') as HTMLInputElement
-    const tags = input.value.split(/[\s,]+/).filter(Boolean)
+    // comma-separated: a tag may have spaces (Gmail labels do)
+    const tags = input.value.split(',').map(t => t.trim()).filter(Boolean)
     this.addingTag = false
     if (tags.length) this.tag(tags, [])
   }
@@ -155,10 +203,14 @@ export class MailMessage extends BaseElement {
           </span>`)}
         ${this.addingTag
           ? html`<form @submit=${this.addTag} @click=${(e: Event) => e.stopPropagation()}>
-              <input name="tag" autofocus placeholder="tag" @blur=${() => { this.addingTag = false }}
+              <input name="tag" autofocus placeholder="tag, another" @blur=${() => { this.addingTag = false }}
                      class="w-24 rounded border border-slate-300 px-1.5 py-0.5 text-xs dark:border-slate-600"></form>`
-          : html`<button title="Add tag" class="rounded px-1 text-xs text-slate-400 hover:text-slate-600" @click=${(e: Event) => { e.stopPropagation(); this.addingTag = true }}>
-              <i class="${fa('tag')}"></i><i class="${fa('plus')} text-[9px]"></i></button>`}
+          : html`<span class="relative">
+              <button title="More" aria-haspopup="menu" aria-expanded=${this.menu} @click=${this.toggleMenu}
+                      class="rounded px-1.5 text-xs text-slate-400 hover:bg-slate-100 hover:text-slate-600 dark:hover:bg-slate-700">
+                <i class="${fa('ellipsis-vertical')}"></i></button>
+              ${this.menu ? this.renderMenu() : nothing}
+            </span>`}
       </div>`
   }
 

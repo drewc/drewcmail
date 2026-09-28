@@ -42,6 +42,8 @@ COPY --from=build /app/dist dist
 COPY package.json ./
 COPY server server
 COPY container/entrypoint.sh /usr/local/bin/drewcmail-entrypoint
+# lieer's gmi with a fix for big pushes (a fresh connection to push on) — ahead of /usr/bin/gmi on PATH
+COPY container/gmi /usr/local/bin/gmi
 
 # /mail: the Maildir (the notmuch database lives in /mail/.notmuch)
 # /config: notmuch-config, plus what the web app writes — accounts.json, passwords/,

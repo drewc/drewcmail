@@ -5,6 +5,7 @@ import path from 'node:path'
 import nodemailer from 'nodemailer'
 import { exec, ExecError } from './exec.ts'
 import * as notmuch from './notmuch.ts'
+import * as activity from './activity.ts'
 import { BadRequest } from './notmuch.ts'
 
 /**
@@ -266,7 +267,7 @@ export async function syncAll(skip: (a: ImapAccount) => string | undefined = () 
     status.set(a.id, s)
     try {
       await fs.mkdir(path.join(IMAP_DIR, a.id), { recursive: true })
-      await exec(MBSYNC, ['-c', MBSYNC_CONFIG, '--quiet', a.id], undefined, { timeout: SYNC_TIMEOUT })
+      await activity.track(`IMAP sync · ${a.email}`, () => exec(MBSYNC, ['-c', MBSYNC_CONFIG, '--quiet', a.id], undefined, { timeout: SYNC_TIMEOUT }))
       Object.assign(s, { ok: true, error: undefined })
     } catch (e) {
       Object.assign(s, { ok: false, error: explain(e, 'IMAP') })

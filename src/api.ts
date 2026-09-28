@@ -1,4 +1,4 @@
-import type { BridgeSettings, ProtonStatus, ProtonStep, Discovery, Draft, GmailAccount, ImapAccount, ImapInput, Identity, MailFilter, ReplyTemplate, ShowResult, SyncState, ThreadSummary } from './types.ts'
+import type { Activity, BridgeSettings, ProtonStatus, ProtonStep, Discovery, Draft, GmailAccount, ImapAccount, ImapInput, Identity, MailFilter, ReplyTemplate, ShowResult, SyncState, ThreadSummary } from './types.ts'
 
 export class ApiError extends Error {}
 
@@ -32,6 +32,7 @@ export const api = {
   send: (draft: Draft & { from: string; attachments?: { filename: string; contentType: string; content: string }[] }) =>
     call<{ messageId: string }>('POST', '/api/send', draft),
   syncState: () => call<SyncState>('GET', '/api/sync'),
+  activity: () => call<{ activity: Activity[]; sync: SyncState }>('GET', '/api/activity'),
   sync: () => call<SyncState>('POST', '/api/sync', {}),
   gmailAccounts: () => call<GmailAccount[]>('GET', '/api/gmail'),
   gmailStart: (email: string, redirect: string, client?: string) => call<{ url: string }>('POST', '/api/gmail/start', { email, redirect, client }),

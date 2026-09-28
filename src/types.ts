@@ -49,6 +49,8 @@ export type ReplyTemplate = {
 export type Identity = { email: string; name: string }
 
 export type SyncState = { running: boolean; last?: string; ok?: boolean; error?: string }
+/** something the server is doing (or waiting to do): a sync step, a Gmail push, Bridge syncing */
+export type Activity = { id: number; what: string; since: string; detail?: string; waiting?: boolean }
 
 export type Draft = {
   from?: string

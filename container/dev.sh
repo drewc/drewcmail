@@ -61,6 +61,7 @@ podman pod create --replace --name "$POD" \
 podman run -d --pod "$POD" --name "$POD-server" \
   -v "$SRC:/app:z" \
   -v "$SRC/container/entrypoint.sh:/usr/local/bin/drewcmail-entrypoint:ro,z" \
+  -v "$SRC/container/gmi:/usr/local/bin/gmi:ro,z" \
   -v "$MAIL_DIR:/mail:Z" \
   -v "$CONFIG_DIR:/config:Z" \
   -e NODE_ENV=development \
@@ -72,6 +73,7 @@ podman run -d --pod "$POD" --name "$POD-vite" \
   -w /app \
   --entrypoint '["tini", "--"]' \
   -e VITE_CACHE_DIR=node_modules/.vite-dev-pod \
+  -e NODE_ENV=development \
   "$IMAGE" bun --bun node_modules/vite/bin/vite.js --host 0.0.0.0 --port "$VITE_PORT" --strictPort >/dev/null
 
 echo "drewcmail dev: http://localhost:$VITE_PORT (server on http://$API_BIND) — edit server/ or src/, no restart needed"

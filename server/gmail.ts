@@ -2,6 +2,7 @@ import { promises as fs, existsSync } from 'node:fs'
 import path from 'node:path'
 import { createHash, randomBytes } from 'node:crypto'
 import { exec, ExecError } from './exec.ts'
+import * as activity from './activity.ts'
 import * as notmuch from './notmuch.ts'
 import { BadRequest } from './notmuch.ts'
 
@@ -80,12 +81,59 @@ function lieerError(e: unknown) {
   return /invalid_grant|RefreshError/.test(error) ? 'Google refused the saved sign-in (revoked or expired) — sign in again in Accounts' : error
 }
 
+/**
+ * lieer's output without a terminal (--no-progress): a phase is `receiving metadata (209395) ...`
+ * then a dot per 10 items and `done: …`; other lines (`remote: waiting 3.0 seconds..`,
+ * `push: …`) are notes. Returns a stdout handler that says where it is (`set`) and logs
+ * the lines worth keeping.
+ */
+export function lieerProgress(email: string, set: (detail: string) => void) {
+  let buf = ''
+  let phase: { desc: string; total?: number; dots: number } | null = null
+  const log = (line: string) => { if (!/batch request size/.test(line)) console.log(`gmi ${email}: ${line}`) }
+  const show = () => {
+    if (!phase) return
+    const done = phase.dots * 10
+    // no total, or a placeholder one (lieer's full pull starts "fetching messages (1)"): just count
+    if (!phase.total || phase.total <= 1 || done > phase.total) return set(done ? `${phase.desc}: ${done.toLocaleString('en')}…` : `${phase.desc}…`)
+    set(`${phase.desc}: ${done.toLocaleString('en')} of ${phase.total.toLocaleString('en')} (${Math.floor((done / phase.total) * 100)}%)`)
+  }
+  return (chunk: Buffer) => {
+    buf += chunk.toString('utf8')
+    for (;;) {
+      const dots = /^\.+/.exec(buf)
+      if (dots) {
+        if (phase) { phase.dots += dots[0].length; show() }
+        buf = buf.slice(dots[0].length)
+        continue
+      }
+      const start = /^([^.\n]*?) (?:\((\d+)\) )?\.\.\./.exec(buf)
+      if (start) {
+        phase = { desc: start[1].trim(), total: start[2] ? Number(start[2]) : undefined, dots: 0 }
+        log(`${phase.desc}${phase.total ? ` (${phase.total})` : ''}`)
+        show()
+        buf = buf.slice(start[0].length)
+        continue
+      }
+      const nl = buf.indexOf('\n')
+      if (nl < 0) break
+      const line = buf.slice(0, nl).trim()
+      buf = buf.slice(nl + 1)
+      if (!line) continue
+      if (line.startsWith('done:')) { log(`${phase?.desc ?? ''} ${line}`); phase = null; continue }
+      log(line)
+      set(line)
+    }
+  }
+}
+
 async function run(email: string, action: 'push' | 'pull') {
   const s: Status = { ...(status.get(email) ?? {}), syncing: true }
   status.set(email, s)
   try {
     const resume = action === 'pull' && existsSync(path.join(repo(email), RESUME)) ? ['--resume'] : []
-    await exec(GMI, [action, ...resume, '-C', repo(email), '--no-progress', '--quiet'])
+    await activity.track(`Gmail ${action} · ${email}`, set =>
+      exec(GMI, [action, ...resume, '-C', repo(email), '--no-progress'], undefined, { onStdout: lieerProgress(email, set) }))
     Object.assign(s, { ok: true, error: undefined })
   } catch (e) {
     const error = lieerError(e)

@@ -34,7 +34,7 @@ Mail Bridge** (gRPC). Every account is added in the web app — no config file i
 server/                         Bun, TypeScript run directly; imports use .ts extensions (erasableSyntaxOnly)
   index.ts      HTTP: route table (route('GET', '/api/x/:id', h)), JSON helpers, static dist/ with SPA fallback,
                 optional Basic auth (MAIL_USER/MAIL_PASSWORD), startup `notmuch new`, SYNC_INTERVAL timer, proton.boot()
-  exec.ts       exec(bin, args, input?, {timeout, env}) — spawn with an argv, never a shell; ExecError {code, stderr}
+  exec.ts       exec(bin, args, input?, {timeout, env, onStdout}) — spawn with an argv, never a shell; ExecError {code, stderr}
   notmuch.ts    the notmuch CLI: search/count/tags/show/reply/tag/insert/new (--format-version=5, queries after `--`),
                 idQuery()/threadQuery(), config get/set (file AND --database), identities()/setIdentities()/addIdentity() (/config/identities.json, mirrored into user.*),
                 ignore(pattern), prepareForLieer(), tagNew(rules), BadRequest (→ HTTP 400)
@@ -43,12 +43,16 @@ server/                         Bun, TypeScript run directly; imports use .ts ex
                 → filters.runNew() (afew) → doneNew() (−new);
                 schedulePush() (tags → Gmail after 5 s); send(): nodemailer streamTransport composes, then the From
                 address picks gmail.send / imap.send; withoutBcc()
+  activity.ts   what is running now: begin(what, {waiting}) → {set(detail), end()}, track(what, fn); GET /api/activity.
+                exclusive(what, fn) shows queued work as waiting; gmail/imap/notmuch/afew steps and Bridge syncs are tracked
   filters.ts    filters (query → add/remove tags): /config/filters.json → generated /config/afew/config
                 ([Filter.N] sections); runNew() = `afew --tag --new` with XDG_CONFIG_HOME=/config; save(apply)
                 also `notmuch tag`s the mail matching now
   gmail.ts      lieer accounts in /mail/gmail/<address>/: our own OAuth (PKCE, loopback redirect to the SPA) writes
                 .credentials.gmailieer.json; `gmi init --no-auth`, `gmi set --local-trash-tag deleted --ignore-tags-local new`,
-                `gmi push|pull|send -t` (push all before pulling any: a first download can take hours); lieerError() turns tracebacks into one line
+                `gmi push|pull|send -t` (push all before pulling any: a first download can take hours); run with
+                --no-progress (not --quiet): lieerProgress() turns `phase (N) ...` + a dot per 10 items into activity detail
+                ("receiving metadata: 14,320 of 209,444 (7%)") and logs the lines; lieerError() turns tracebacks into one line
   imap.ts       IMAP/SMTP accounts: /config/accounts.json + /config/passwords/<id>.{imap,smtp} (0600) → generated
                 /config/mbsyncrc + /config/msmtprc (rewritten every sync); test() = `mbsync --list` in a temp config +
                 nodemailer verify(); save() (HTTP) vs saveAccount() (internal, may set proton/ca); discover() =
@@ -69,11 +73,14 @@ src/
     tailwind.css    `@custom-variant dark (:host([data-theme=dark]) &)` — `dark:` works per host
     app.ts          <mail-app>: hash state (#q=<query>&t=<thread>), search results, keyboard shortcuts, drafts,
                     toasts, sync button, OAuth return (?state&code → /api/gmail/finish), opens <mail-accounts>;
+                    spinner: polls /api/activity (5 s, 1.5 s while open), spins while anything runs; click = fetch
+                    mail when idle, else a popover of what is running (step, lieer progress, elapsed, waiting) + last sync;
                     new-version modal: its entry chunk (import.meta.url, hashed) ≠ /api/version's → Reload / Not now
                     (checked on focus/visibility and every 5 min; not under Vite dev)
     sidebar.ts      folders (saved queries), tags, unread counts, Accounts
     thread-list.ts  results, quick actions, right-click menu (… → "Filter messages like this" = `filters {thread}`); thread-view.ts: a thread, marks read; message.ts: one message
-                    (headers, text with folded quotes, HTML in a sandboxed iframe, attachments, reply/forward, tags)
+                    (headers, text with folded quotes, HTML in a sandboxed iframe, attachments, reply/forward, tags; a ⋮ menu by
+                    the date: reply, reply all, forward, add tag — tags are comma-separated, spaces allowed)
     compose.ts      docked compose windows (From = notmuch identities), attachments as base64
     accounts.ts     the Accounts dialog: Gmail (OAuth + paste fallback), <mail-proton>, IMAP list + <mail-imap-form>
     filters.ts      the Filters dialog: list, and a form (From/To/Subject/words → query, live count, actions
@@ -82,6 +89,7 @@ src/
     identities.ts   Send as: every From address with its name, the default, add an alias, remove
     proton.ts       Bridge on/off, sign-in steps, users (progress, split mode, remove), ports/security
 container/      entrypoint.sh (writes notmuch-config on first run, exec bun — or its arguments), run.sh (podman run, keep-id),
+                gmi (lieer with a fresh connection for pushing — see Rules),
                 drewcmail.container (Quadlet), dev.sh (the dev pod: source at /app, entrypoint.sh mounted over the image's),
                 dev-server.ts (restarts the server on server/ changes: fs.watch on the directory, SIGTERM, start —
                 not `bun --watch`, which loses rename-saved files)
@@ -132,6 +140,13 @@ All via `this.emit()` (bubbles, composed — they cross shadow roots): `search {
   filters (3.x has no default chain). It tags through the Python bindings, which do **not** sync maildir flags —
   `doneNew()` runs after it through the CLI, which does. Not a notmuch `post-new` hook: the folder rules run after
   `notmuch new` returns, and filters must come after them.
+- **lieer pushes**: a push looks up every changed message, then resolves the changes locally without a request
+  (≈10 min for 200k); Google drops the idle keep-alive connection and the first push batch dies with BrokenPipe —
+  every time. `container/gmi` (on PATH before /usr/bin/gmi) empties httplib2's pool before push_changes(); the
+  requests carry the client's http, so it is emptied in place. lieer saves its push point (`lastmod`) only when
+  every change went through — a change made in Gmail meanwhile means a full re-review next time (`--force` pushes
+  over it). A full pull sets `lastmod`; a partial pull does not. A notmuch writer during a long push can break its
+  read snapshot (XapianError) — keep the database quiet for big pushes.
 - Shell heredocs that write config (`entrypoint.sh`): no backticks in the text — they run.
 - **Proton/gRPC**: the `bytes` password fields hold base64 *text* — send `Buffer.from(base64String)`, not the string
   (protobufjs would decode it). The gRPC/IMAP cert is for IP 127.0.0.1: name the channel `localhost` and check the cert

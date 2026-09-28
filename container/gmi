@@ -1,0 +1,39 @@
+#!/usr/bin/python3
+"""
+gmi (lieer) with one fix, installed ahead of Debian's /usr/bin/gmi.
+
+On a big push lieer looks up every changed message, then works out the changes
+locally — minutes without a request (9 min for 209k messages). Google closes the idle
+keep-alive connection meanwhile, and the first push batch fails with BrokenPipe
+(httplib2 does not retry it), so the push never completes. Before pushing, drop the
+pooled connections: the batches then start on a fresh one.
+
+The push requests are built before push_changes() and carry the client's http, and a
+batch sends through its first request's http — so the pool is emptied in place,
+rather than building a new client.
+"""
+import sys
+
+sys.path.insert(0, "/usr/share/lieer")  # where Debian installs lieer (its gmi runs from there)
+
+from lieer import Gmailieer  # noqa: E402
+from lieer import remote  # noqa: E402
+
+_push_changes = remote.Remote.push_changes
+
+
+def push_changes(self, actions, cb):
+    http = getattr(self.service._http, "http", self.service._http)  # AuthorizedHttp wraps httplib2.Http
+    for conn in list(http.connections.values()):
+        try:
+            conn.close()
+        except Exception:
+            pass
+    http.connections.clear()
+    return _push_changes(self, actions, cb)
+
+
+remote.Remote.push_changes = push_changes
+
+if __name__ == "__main__":
+    Gmailieer().main()

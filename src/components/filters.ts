@@ -10,7 +10,8 @@ type Actions = { skipInbox: boolean; markRead: boolean; star: boolean; trash: bo
 const NO_ACTIONS: Actions = { skipInbox: false, markRead: false, star: false, trash: false, spam: false, labels: '' }
 const ACTION_TAGS = new Set(['flagged', 'deleted', 'spam'])
 
-const labelList = (s: string) => s.split(/[\s,]+/).filter(Boolean)
+/** labels are comma-separated: a label may have spaces (Gmail's do) */
+const labelList = (s: string) => s.split(',').map(l => l.trim()).filter(Boolean)
 
 function toTags(a: Actions) {
   const add = [...labelList(a.labels), ...a.star ? ['flagged'] : [], ...a.trash ? ['deleted'] : [], ...a.spam ? ['spam'] : []]
@@ -277,7 +278,7 @@ export class Filters extends BaseElement {
           ${check('star', 'Star it', 'star')}
           <label class="flex items-center gap-2 text-sm">
             <span class="w-4"></span><i class="${fa('tag')} w-4 text-center text-slate-400"></i> Apply the label
-            <input class="${input} flex-1" list="all-tags" placeholder="e.g. lists/clojure" .value=${a.labels}
+            <input class="${input} flex-1" list="all-tags" placeholder="e.g. lists/clojure, Maxwell Claims" .value=${a.labels}
                    @input=${(e: Event) => this.setActions({ labels: (e.target as HTMLInputElement).value })}>
             <datalist id="all-tags">${this.allTags.map(t => html`<option value=${t}></option>`)}</datalist>
           </label>

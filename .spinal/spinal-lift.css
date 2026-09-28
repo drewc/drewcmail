@@ -50,6 +50,16 @@
 
 @property --tw-tracking{syntax:"*";inherits:false}
 
+@property --tw-ordinal{syntax:"*";inherits:false}
+
+@property --tw-slashed-zero{syntax:"*";inherits:false}
+
+@property --tw-numeric-figure{syntax:"*";inherits:false}
+
+@property --tw-numeric-spacing{syntax:"*";inherits:false}
+
+@property --tw-numeric-fraction{syntax:"*";inherits:false}
+
 @property --tw-shadow{syntax:"*";inherits:false;initial-value:0 0 #0000}
 
 @property --tw-shadow-color{syntax:"*";inherits:false}

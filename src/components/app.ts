@@ -3,7 +3,7 @@ import { customElement, state, query } from 'lit/decorators.js'
 import { repeat } from 'lit/directives/repeat.js'
 import { BaseElement, fa } from './base.ts'
 import { api, threadQuery } from '../api.ts'
-import type { Draft, Identity, SyncState, ThreadSummary } from '../types.ts'
+import type { Activity, Draft, Identity, SyncState, ThreadSummary } from '../types.ts'
 import './sidebar.ts'
 import './thread-list.ts'
 import './thread-view.ts'
@@ -16,10 +16,22 @@ const PAGE = 50
 /**
  * The build this page runs: its entry script, whose name carries a content hash (the
  * whole app is one chunk). The server says which one index.html loads now; when that
- * differs, a new version was installed. None under Vite's dev server, which reloads itself.
+ * differs, a new version was installed. None unless this page is a build (not under Vite's
+ * dev server, which reloads by itself — whatever NODE_ENV says).
  */
-const ENTRY = import.meta.env.DEV ? null : new URL(import.meta.url).pathname
+const ENTRY = (p => /^\/assets\/[^/]+\.js$/.test(p) ? p : null)(new URL(import.meta.url).pathname)
 const VERSION_CHECK = 5 * 60_000
+/** how often to ask the server what it is doing: now and then, often while the popover is open */
+const ACTIVITY_POLL = 5_000
+const ACTIVITY_POLL_OPEN = 1_500
+
+/** 42 s · 3 m 5 s · 1 h 12 m */
+const elapsed = (since: string) => {
+  const s = Math.max(0, Math.floor((Date.now() - Date.parse(since)) / 1000))
+  if (s < 60) return `${s} s`
+  if (s < 3600) return `${Math.floor(s / 60)} m ${s % 60} s`
+  return `${Math.floor(s / 3600)} h ${Math.floor((s % 3600) / 60)} m`
+}
 const DEFAULT_QUERY = 'tag:inbox'
 
 /** where we are lives in the hash: #q=<notmuch query>&t=<thread id> */
@@ -55,6 +67,10 @@ export class MailApp extends BaseElement {
   /** a newer build's entry script, when there is one to offer; `declined` is the one the user said Not now to */
   @state() private newVersion: string | null = null
   private declined: string | null = null
+  /** what the server is doing (polled); the popover under the spinner lists it */
+  @state() private activity: Activity[] = []
+  @state() private showActivity = false
+  private activityTimer?: number
   private versionTimer?: number
   @state() private sync: SyncState = { running: false }
   @state() private toast = ''
@@ -86,6 +102,8 @@ export class MailApp extends BaseElement {
     this.onHash()
     this.finishOAuth()
     this.loadIdentities()
+    this.pollActivity()
+    window.addEventListener('click', this.closeActivity)
     if (ENTRY) {
       document.addEventListener('visibilitychange', this.checkVersion)
       window.addEventListener('focus', this.checkVersion)
@@ -103,6 +121,63 @@ export class MailApp extends BaseElement {
       const { entry } = await api.version()
       if (entry && entry !== ENTRY && entry !== this.declined) this.newVersion = entry
     } catch { /* the server is restarting: ask next time */ }
+  }
+
+  /** ask the server what it is doing — the spinner spins while anything runs, not only syncs started here */
+  private pollActivity = async () => {
+    clearTimeout(this.activityTimer)
+    if (document.visibilityState === 'visible' || this.showActivity) {
+      try {
+        const { activity, sync } = await api.activity()
+        const finished = this.sync.running && !sync.running
+        this.activity = activity
+        this.sync = sync
+        if (finished) await this.refresh()
+      } catch { /* the server is restarting */ }
+    }
+    this.activityTimer = window.setTimeout(this.pollActivity, this.showActivity ? ACTIVITY_POLL_OPEN : ACTIVITY_POLL)
+  }
+
+  private get busy() { return this.sync.running || this.activity.length > 0 }
+
+  /** the spinner: fetch mail when idle; while busy, show what is running */
+  private onSyncButton(e: Event) {
+    e.stopPropagation()
+    if (this.busy) {
+      this.showActivity = !this.showActivity
+      if (this.showActivity) this.pollActivity()
+    } else this.runSync()
+  }
+
+  private closeActivity = () => { this.showActivity = false }
+
+  private renderActivity() {
+    const last = this.sync.last ? `${elapsed(this.sync.last)} ago` : 'not yet'
+    return html`
+      <div role="dialog" aria-label="What is running" @click=${(e: Event) => e.stopPropagation()}
+           @keydown=${(e: KeyboardEvent) => { if (e.key === 'Escape') this.closeActivity() }}
+           class="absolute top-full right-0 z-50 mt-2 w-96 max-w-[calc(100vw-2rem)] rounded-xl border border-slate-200 bg-white p-3 text-sm shadow-xl dark:border-slate-700 dark:bg-slate-800">
+        ${this.activity.length ? html`
+          <ul class="space-y-2">
+            ${this.activity.map(a => html`
+              <li class="flex gap-2.5">
+                <i class="${a.waiting ? fa('hourglass-half') : `${fa('spinner')} fa-spin`} mt-0.5 w-4 text-center text-slate-400"></i>
+                <div class="min-w-0 flex-1">
+                  <div class="flex items-baseline gap-2">
+                    <span class="flex-1 truncate font-medium ${a.waiting ? 'text-slate-500' : ''}" title=${a.what}>${a.what}${a.waiting ? ' — waiting its turn' : ''}</span>
+                    <span class="shrink-0 text-xs text-slate-500 tabular-nums">${elapsed(a.since)}</span>
+                  </div>
+                  ${a.detail ? html`<div class="truncate text-xs text-slate-500" title=${a.detail}>${a.detail}</div>` : ''}
+                </div>
+              </li>`)}
+          </ul>`
+          : html`<p class="text-slate-500">Nothing running.</p>`}
+        <p class="mt-3 border-t border-slate-200 pt-2 text-xs text-slate-500 dark:border-slate-700">
+          Last sync ${last}${this.sync.ok === false ? html` — <span class="text-red-600">failed</span>` : this.sync.last ? ' — ok' : ''}
+        </p>
+        ${this.sync.ok === false && this.sync.error ? html`
+          <pre class="mt-1 max-h-32 overflow-auto rounded bg-red-50 p-1.5 text-[11px] whitespace-pre-wrap text-red-700 dark:bg-red-950 dark:text-red-300">${this.sync.error}</pre>` : ''}
+      </div>`
   }
 
   private declineReload() {
@@ -140,6 +215,8 @@ export class MailApp extends BaseElement {
   private loadIdentities() { api.identities().then(i => { this.identities = i }).catch(() => {}) }
 
   disconnectedCallback() {
+    clearTimeout(this.activityTimer)
+    window.removeEventListener('click', this.closeActivity)
     document.removeEventListener('visibilitychange', this.checkVersion)
     window.removeEventListener('focus', this.checkVersion)
     clearInterval(this.versionTimer)
@@ -163,6 +240,8 @@ export class MailApp extends BaseElement {
         const { email } = await api.gmailFinish(returned)
         this.say(`Connected ${email} — the first download can take a while`)
         this.loadIdentities()
+    this.pollActivity()
+    window.addEventListener('click', this.closeActivity)
     if (ENTRY) {
       document.addEventListener('visibilitychange', this.checkVersion)
       window.addEventListener('focus', this.checkVersion)
@@ -326,10 +405,13 @@ export class MailApp extends BaseElement {
                      class="w-full rounded-lg border border-slate-300 bg-slate-50 py-1.5 pr-3 pl-9 text-sm outline-none focus:border-sky-500 focus:ring-2 focus:ring-sky-200 dark:border-slate-600 dark:bg-slate-900 dark:focus:ring-sky-900">
             </label>
           </form>
-          <button title="Fetch mail (g)" @click=${this.runSync} ?disabled=${this.sync.running}
-                  class="rounded-lg px-2.5 py-1.5 text-slate-500 hover:bg-slate-100 disabled:opacity-60 dark:hover:bg-slate-700">
-            <i class="${fa('rotate')} ${this.sync.running ? 'fa-spin' : ''} ${this.sync.ok === false ? 'text-red-500' : ''}" title=${this.sync.error ?? ''}></i>
-          </button>
+          <div class="relative">
+            <button title=${this.busy ? 'Working — click to see what' : 'Fetch mail (g)'} @click=${this.onSyncButton} aria-expanded=${this.showActivity}
+                    class="rounded-lg px-2.5 py-1.5 text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-700">
+              <i class="${fa('rotate')} ${this.busy ? 'fa-spin' : ''} ${this.sync.ok === false ? 'text-red-500' : ''}"></i>
+            </button>
+            ${this.showActivity ? this.renderActivity() : ''}
+          </div>
           <button title="Accounts" @click=${() => { this.showAccounts = true }}
                   class="rounded-lg px-2.5 py-1.5 text-slate-500 hover:bg-slate-100 md:hidden dark:hover:bg-slate-700">
             <i class="${fa('user-gear')}"></i>
