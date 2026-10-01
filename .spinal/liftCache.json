@@ -1,6 +1,7 @@
 {
   "sources": {
     "node_modules/.pnpm/@fortawesome+fontawesome-free@7.3.1/node_modules/@fortawesome/fontawesome-free/css/all.min.css": [],
+    "node_modules/.pnpm/quill@2.0.3/node_modules/quill/dist/quill.snow.css": [],
     "src/components/tailwind.css": [
       "@property --tw-translate-x{syntax:\"*\";inherits:false;initial-value:0}",
       "@property --tw-translate-y{syntax:\"*\";inherits:false;initial-value:0}",

@@ -429,7 +429,7 @@ export class MailApp extends BaseElement {
 
           <main class="${this.threadId ? 'flex' : 'hidden lg:flex'} min-w-0 flex-1 flex-col">
             ${this.threadId
-              ? html`<mail-thread-view class="min-h-0 flex-1" .threadId=${this.threadId}></mail-thread-view>`
+              ? html`<mail-thread-view class="min-h-0 flex-1" .threadId=${this.threadId} .identities=${this.identities}></mail-thread-view>`
               : html`<div class="m-auto text-center text-slate-400">
                   <i class="${fa('inbox')} mb-3 text-5xl"></i>
                   <p>Select a conversation</p>

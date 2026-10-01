@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <!-- the Content-Security-Policy is added by src/editor/main.ts before any content: remote images only with ?remote -->
+    <meta name="referrer" content="no-referrer" />
+    <title>editor</title>
+    <style>
+      html { color-scheme: light; height: 100%; }
+      body { margin: 0; min-height: 100%; background: #fff; }
+      #editor { box-sizing: border-box; min-height: 100vh; padding: 12px; outline: none; font: 14px/1.5 system-ui, sans-serif; color: #1e293b; overflow-wrap: anywhere; }
+      #editor img { max-width: 100%; height: auto; }
+      #editor blockquote { margin: 0 0 0 .8ex; border-left: 1px solid #ccc; padding-left: 1ex; }
+      #editor pre { white-space: pre-wrap; }
+      #editor a { color: #0369a1; }
+      #editor:empty::before, #editor.blank::before { content: attr(data-placeholder); color: #94a3b8; position: absolute; pointer-events: none; }
+    </style>
+    <script type="module" src="/src/editor/main.ts"></script>
+  </head>
+  <body><div id="editor"></div></body>
+</html>

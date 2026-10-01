@@ -39,6 +39,9 @@ importers:
       postcss:
         specifier: ^8.5.28
         version: 8.5.28
+      squire-rte:
+        specifier: ^2.4.9
+        version: 2.4.9
       tailwindcss:
         specifier: ^4.3.3
         version: 4.3.3
@@ -701,6 +704,9 @@ packages:
     resolution: {integrity: sha512-UXWMKhLOwVKb728IUtQPXxfYU+usdybtUrK/8uGE8CQMvrhOpwvzDBwj0QhSL7MQc7vIsISBG8VQ8+IDQxpfQA==}
     engines: {node: '>=0.10.0'}
 
+  squire-rte@2.4.9:
+    resolution: {integrity: sha512-O3uQ6HF+rGNyQ/Hk5tyADBTnwoLzUDO7s2GTn2SInbXKAMh7aZXQ59107q9vr79vx/Pde5q0rfnHZ172C2/RIg==}
+
   string-width@4.2.3:
     resolution: {integrity: sha512-wKyQRQpjJ0sIp62ErSZdGsjMJWsap5oRNihHhu6G7JVO/9jIB6UyevL+tXuOqrng8j/cxKTWyWUwvSTriiZz/g==}
     engines: {node: '>=8'}
@@ -1201,6 +1207,8 @@ snapshots:
       '@rolldown/binding-win32-x64-msvc': 1.2.11
 
   source-map-js@1.2.1: {}
+
+  squire-rte@2.4.9: {}
 
   string-width@4.2.3:
     dependencies:

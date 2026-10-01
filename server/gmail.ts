@@ -145,24 +145,32 @@ async function run(email: string, action: 'push' | 'pull') {
 }
 
 /**
- * Push local tag changes for every account, then pull new mail and label changes for
- * every account — not `gmi sync` (push+pull) one account after the other, where a long
- * pull (a first download) held back the next account's push for hours. An account
- * whose push failed is not pulled: the pull would overwrite its unpushed changes. An
+ * Pull new mail and label changes for every account. A pull touches only messages that
+ * changed in Gmail; for those Gmail wins whichever runs first (a push skips a message
+ * changed remotely since the last pull), so new mail need not wait for pushes. An
  * interrupted first download resumes (`--resume`) rather than starting over.
  */
-export async function syncAll(action: 'sync' | 'push' = 'sync') {
+export async function pullAll() {
   const errors: string[] = []
-  const failed = new Set<string>()
-  const authorized = (await accounts()).filter(a => a.authorized)
-  for (const step of action === 'sync' ? ['push', 'pull'] as const : ['push'] as const) {
-    for (const a of authorized) {
-      if (failed.has(a.email)) continue
-      // until its first download completes, lieer sees every message as changed remotely and pushes
-      // nothing — after fetching metadata for all of them, every time
-      if (step === 'push' && !await pulledOnce(a.email)) continue
-      await run(a.email, step).catch(e => { failed.add(a.email); errors.push(`${a.email}: ${(e as Error).message}`) })
-    }
+  for (const a of (await accounts()).filter(a => a.authorized))
+    await run(a.email, 'pull').catch(e => errors.push(`${a.email}: ${(e as Error).message}`))
+  if (errors.length) throw new Error(errors.join('\n'))
+}
+
+/**
+ * Push local tag changes for every account — right after a pull, so few messages have
+ * changed remotely meanwhile (each one that has stops lieer saving its push point, and
+ * the next push reviews everything again). `yieldTo()` true between accounts stops early:
+ * mail is waiting to be fetched (the sync after it pushes again).
+ */
+export async function pushAll(yieldTo: () => boolean = () => false) {
+  const errors: string[] = []
+  for (const a of (await accounts()).filter(a => a.authorized)) {
+    if (yieldTo()) break
+    // until its first download completes, lieer sees every message as changed remotely and pushes
+    // nothing — after fetching metadata for all of them, every time
+    if (!await pulledOnce(a.email)) continue
+    await run(a.email, 'push').catch(e => errors.push(`${a.email}: ${(e as Error).message}`))
   }
   if (errors.length) throw new Error(errors.join('\n'))
 }

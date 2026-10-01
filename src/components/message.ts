@@ -2,9 +2,10 @@ import { html, css, nothing, type TemplateResult } from 'lit'
 import { customElement, property, state } from 'lit/decorators.js'
 import { BaseElement, fa } from './base.ts'
 import { api, idQuery } from '../api.ts'
-import { attachments, cidMap, hasHtml, leaves, plainText, prepareHtml, type Leaf } from '../body.ts'
+import { attachments, calendarPart, cidMap, forwardBlock, hasHtml, leaves, originalHtml, plainText, prepareHtml, replyQuote, type Leaf } from '../body.ts'
 import { displayName, HIDDEN_TAGS, humanSize, longDate, shortDate } from '../format.ts'
-import type { Message } from '../types.ts'
+import type { Identity, Message } from '../types.ts'
+import './invite.ts'
 
 const URL_RE = /(https?:\/\/[^\s<>"')\]]+[^\s<>"')\].,;:!?])/g
 
@@ -38,6 +39,9 @@ export class MailMessage extends BaseElement {
   static styles = [...(BaseElement.styles as []), css`iframe { display: block; width: 100%; border: 0; }`]
 
   @property({ attribute: false }) message!: Message
+  /** for an invitation's card: the whole thread (our answers), and our addresses */
+  @property({ attribute: false }) thread: Message[] = []
+  @property({ attribute: false }) identities: Identity[] = []
   @property({ type: Boolean, reflect: true }) open = false
   @state() private preferHtml = true
   @state() private remote = false
@@ -100,25 +104,40 @@ export class MailMessage extends BaseElement {
     } catch (e) { this.emit('toast', { text: (e as Error).message }) }
   }
 
+  /** the original as HTML to quote, its inline images pointing at their parts */
+  private original() { return originalHtml(this.message, part => api.partUrl(this.message.id, part)) }
+
+  /** like Gmail: the quote goes along folded (⋯), the original's HTML as it was */
   async reply(to: 'all' | 'sender') {
     try {
       const r = await api.reply(this.message.id, to)
       const h = r['reply-headers']
-      const quoted = plainText(r.original).split('\n').map(l => `> ${l}`).join('\n')
+      const { html: original, parts } = this.original()
       this.emit('compose', {
         from: h.From, to: h.To, cc: h.Cc, subject: h.Subject,
         inReplyTo: h['In-reply-to'], references: h.References,
-        text: `\n\nOn ${longDate(this.message.timestamp)}, ${this.message.headers.From} wrote:\n${quoted}\n`,
+        html: '',
+        quote: replyQuote(`On ${longDate(this.message.timestamp)}, ${this.message.headers.From} wrote:`, original),
+        parts,
+        remoteImages: this.remote,
       })
     } catch (e) { this.emit('toast', { text: (e as Error).message }) }
   }
 
+  /** the original in the body under its headers, and its attachments */
   private forward() {
     const h = this.message.headers
-    const header = ['From', 'Date', 'Subject', 'To', 'Cc'].filter(k => h[k]).map(k => `${k}: ${h[k]}`).join('\n')
+    const { html: original, parts } = this.original()
+    const inline = new Set(parts.map(p => p.part))
+    const files = attachments(this.message).filter(p => !inline.has(p.id)).map(p => ({
+      message: this.message.id, part: p.id, filename: p.filename ?? `part-${p.id}`, contentType: p['content-type'],
+      size: p['content-length'], url: api.partUrl(this.message.id, p.id),
+    }))
     this.emit('compose', {
       subject: /^fwd?:/i.test(h.Subject ?? '') ? h.Subject : `Fwd: ${h.Subject ?? ''}`,
-      text: `\n\n---------- Forwarded message ----------\n${header}\n\n${plainText(this.message)}\n`,
+      html: `<div><br></div><div><br></div>${forwardBlock(h, original)}`,
+      parts: [...parts, ...files],
+      remoteImages: this.remote,
     })
   }
 
@@ -223,7 +242,8 @@ export class MailMessage extends BaseElement {
       <button class="flex w-full items-center gap-3 px-4 py-2.5 text-left hover:bg-slate-50 dark:hover:bg-slate-800/60" @click=${() => { this.open = true }}>
         <span class="w-40 shrink-0 truncate text-sm ${unread ? 'font-bold' : 'font-medium'}">${from}</span>
         <span class="min-w-0 flex-1 truncate text-sm text-slate-500">${plainText(m).slice(0, 200)}</span>
-        ${attachments(m).length ? html`<i class="${fa('paperclip')} text-xs text-slate-400"></i>` : nothing}
+        ${calendarPart(m) ? html`<i class="${fa('calendar')} text-xs text-slate-400" title="Invitation"></i>`
+          : attachments(m).length ? html`<i class="${fa('paperclip')} text-xs text-slate-400"></i>` : nothing}
         <span class="shrink-0 text-xs text-slate-500">${shortDate(m.timestamp)}</span>
       </button>`
 
@@ -262,6 +282,7 @@ export class MailMessage extends BaseElement {
                 <i class="${fa(this.preferHtml ? 'align-left' : 'code')}"></i> ${this.preferHtml ? 'Plain text' : 'HTML'}
               </button>
             </div>` : nothing}
+          <mail-invite .message=${m} .thread=${this.thread} .identities=${this.identities}></mail-invite>
           ${leaves(m.body, this.preferHtml).map(l => this.renderLeaf(l))}
           ${this.renderAttachments()}
 

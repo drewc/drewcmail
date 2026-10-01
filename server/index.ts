@@ -72,7 +72,7 @@ route('GET', '/api/search', async (req) => {
 
 route('GET', '/api/count', async (req) => {
   const queries = req.url_.searchParams.getAll('q')
-  const counts = await Promise.all(queries.map(q => notmuch.count(q)))
+  const counts = await notmuch.countMany(queries)
   return Object.fromEntries(queries.map((q, i) => [q, counts[i]]))
 })
 

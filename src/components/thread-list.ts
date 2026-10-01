@@ -6,6 +6,9 @@ import { api, threadQuery } from '../api.ts'
 import { HIDDEN_TAGS, shortDate } from '../format.ts'
 import type { ThreadSummary } from '../types.ts'
 
+/** tags that are a thread's state, set by the menu's own actions — not offered as labels */
+const STATE_TAGS = new Set([...HIDDEN_TAGS, 'deleted', 'spam', 'draft', 'drafts'])
+
 /** <mail-thread-list>: the search results, with a right-click menu. Emits open-thread, load-more, changed, filters. */
 @customElement('mail-thread-list')
 export class ThreadList extends BaseElement {
@@ -18,9 +21,13 @@ export class ThreadList extends BaseElement {
   @property() q = ''
   /** the right-click menu: where, and for which thread */
   @state() private menu: { x: number; y: number; t: ThreadSummary } | null = null
+  /** the menu's "Labels…" panel: every label, those ticked, what the filter box says */
+  @state() private labels: { x: number; y: number; t: ThreadSummary; all: string[]; on: Set<string>; filter: string } | null = null
 
-  private closeMenu = () => { this.menu = null }
-  private menuKey = (e: KeyboardEvent) => { if (e.key === 'Escape' && this.menu) { e.stopPropagation(); this.closeMenu() } }
+  private closeMenu = () => { this.menu = null; this.labels = null }
+  private menuKey = (e: KeyboardEvent) => {
+    if (e.key === 'Escape' && (this.menu || this.labels)) { e.stopPropagation(); this.closeMenu() }
+  }
 
   connectedCallback() {
     super.connectedCallback()
@@ -43,8 +50,9 @@ export class ThreadList extends BaseElement {
 
   private openMenu(e: MouseEvent, t: ThreadSummary) {
     e.preventDefault()
-    // kept inside the window (the menu is about 18rem tall, 15rem wide)
-    this.menu = { x: Math.min(e.clientX, innerWidth - 248), y: Math.min(e.clientY, innerHeight - 300), t }
+    // kept inside the window (the menu, and the labels panel that replaces it, up to 24rem tall, 15rem wide)
+    this.labels = null
+    this.menu = { x: Math.min(e.clientX, innerWidth - 248), y: Math.max(8, Math.min(e.clientY, innerHeight - 392)), t }
     this.updateComplete.then(() => this.renderRoot.querySelector<HTMLElement>('[role=menuitem]')?.focus())
   }
 
@@ -62,6 +70,87 @@ export class ThreadList extends BaseElement {
     } catch (err) { this.emit('toast', { text: (err as Error).message }) }
   }
 
+  /** from the menu: the thread's labels as ticks, applied together */
+  private async openLabels(e: Event, t: ThreadSummary) {
+    e.stopPropagation()
+    const { x, y } = this.menu!
+    this.menu = null
+    const own = t.tags.filter(tag => !STATE_TAGS.has(tag))
+    this.labels = { x, y, t, all: own, on: new Set(own), filter: '' }
+    this.updateComplete.then(() => this.renderRoot.querySelector<HTMLInputElement>('input[name=label-filter]')?.focus())
+    try {
+      const all = (await api.tags()).filter(tag => !STATE_TAGS.has(tag))
+      if (this.labels?.t === t) this.labels = { ...this.labels, all: [...new Set([...all, ...own])].sort((a, b) => a.localeCompare(b)) }
+    } catch (err) { this.emit('toast', { text: (err as Error).message }) }
+  }
+
+  private async applyLabels() {
+    const l = this.labels
+    if (!l) return
+    const had = new Set(l.t.tags.filter(tag => !STATE_TAGS.has(tag)))
+    const add = [...l.on].filter(tag => !had.has(tag))
+    const remove = [...had].filter(tag => !l.on.has(tag))
+    this.labels = null
+    if (!add.length && !remove.length) return
+    try {
+      await api.tag(threadQuery(l.t.thread), add, remove)
+      const said = [add.length ? `added ${add.join(', ')}` : '', remove.length ? `removed ${remove.join(', ')}` : ''].filter(Boolean).join('; ')
+      this.emit('toast', { text: said[0].toUpperCase() + said.slice(1) })
+      this.emit('changed')
+    } catch (err) { this.emit('toast', { text: (err as Error).message }) }
+  }
+
+  private renderLabels() {
+    const l = this.labels!
+    const f = l.filter.trim()
+    const shown = l.all.filter(tag => tag.toLowerCase().includes(f.toLowerCase()))
+    const creatable = f && !/[",]/.test(f) && !STATE_TAGS.has(f) && !l.all.some(tag => tag.toLowerCase() === f.toLowerCase())
+    // from the current state, not this render's copy: two ticks can land before a re-render
+    const toggle = (tag: string) => {
+      const cur = this.labels!
+      const on = new Set(cur.on)
+      if (on.has(tag)) on.delete(tag); else on.add(tag)
+      this.labels = { ...cur, on }
+    }
+    const create = () => {
+      const cur = this.labels!
+      this.labels = { ...cur, all: [...cur.all, f].sort((a, b) => a.localeCompare(b)), on: new Set([...cur.on, f]), filter: '' }
+    }
+    return html`
+      <div role="dialog" aria-label="Labels" style="left:${l.x}px;top:${l.y}px"
+           @click=${(e: Event) => e.stopPropagation()} @contextmenu=${(e: Event) => e.preventDefault()}
+           class="fixed z-50 flex max-h-96 w-60 flex-col rounded-lg border border-slate-200 bg-white shadow-xl dark:border-slate-700 dark:bg-slate-800">
+        <div class="border-b border-slate-200 px-3 pt-2 pb-1.5 dark:border-slate-700">
+          <p class="mb-1 text-xs font-medium text-slate-500">Label as:</p>
+          <input name="label-filter" placeholder="Filter or new label" .value=${l.filter} autocomplete="off"
+                 class="w-full rounded border border-slate-300 bg-transparent px-2 py-1 text-sm outline-none focus:border-sky-500 dark:border-slate-600"
+                 @input=${(e: Event) => { this.labels = { ...this.labels!, filter: (e.target as HTMLInputElement).value } }}
+                 @keydown=${(e: KeyboardEvent) => {
+                   if (e.key !== 'Enter') return
+                   e.preventDefault()
+                   if (creatable) create()
+                   else if (f && shown.length === 1) { toggle(shown[0]); this.labels = { ...this.labels!, filter: '' } }
+                   else this.applyLabels()
+                 }}>
+        </div>
+        <ul class="min-h-0 flex-1 overflow-y-auto py-1">
+          ${shown.map(tag => html`
+            <li><label class="flex cursor-pointer items-center gap-2.5 px-3 py-1 text-sm hover:bg-slate-100 dark:hover:bg-slate-700">
+              <input type="checkbox" class="accent-sky-600" .checked=${l.on.has(tag)} @change=${() => toggle(tag)}>
+              <span class="truncate">${tag}</span>
+            </label></li>`)}
+          ${creatable ? html`
+            <li><button class="flex w-full items-center gap-2.5 px-3 py-1 text-left text-sm text-sky-700 hover:bg-slate-100 dark:text-sky-400 dark:hover:bg-slate-700" @click=${create}>
+              <i class="${fa('plus')} w-3.5 text-center"></i><span class="truncate">Create “${f}”</span></button></li>` : ''}
+          ${!shown.length && !creatable ? html`<li class="px-3 py-1 text-sm text-slate-400">No labels</li>` : ''}
+        </ul>
+        <div class="flex justify-end gap-2 border-t border-slate-200 px-3 py-2 dark:border-slate-700">
+          <button class="rounded-md px-3 py-1 text-sm text-slate-600 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-700" @click=${() => { this.labels = null }}>Cancel</button>
+          <button class="rounded-md bg-sky-600 px-3 py-1 text-sm font-medium text-white hover:bg-sky-700" @click=${() => this.applyLabels()}>Apply</button>
+        </div>
+      </div>`
+  }
+
   private row(t: ThreadSummary, i: number) {
     const unread = t.tags.includes('unread')
     const starred = t.tags.includes('flagged')
@@ -72,7 +161,7 @@ export class ThreadList extends BaseElement {
           class="group relative cursor-pointer border-b border-slate-100 px-3 py-2.5 dark:border-slate-800
                  ${selected ? 'bg-sky-50 dark:bg-sky-950' : unread ? 'bg-white dark:bg-slate-800/60' : 'hover:bg-slate-100 dark:hover:bg-slate-800/40'}
                  ${i === this.cursor ? 'shadow-[inset_3px_0_0] shadow-sky-500' : ''}
-                 ${this.menu?.t.thread === t.thread ? 'outline-2 -outline-offset-2 outline-sky-400' : ''}">
+                 ${(this.menu ?? this.labels)?.t.thread === t.thread ? 'outline-2 -outline-offset-2 outline-sky-400' : ''}">
         <div class="flex items-baseline gap-2">
           <button title=${starred ? 'Unstar' : 'Star'} @click=${(e: Event) => this.quickTag(e, t, starred ? [] : ['flagged'], starred ? ['flagged'] : [])}
                   class="${starred ? 'text-amber-400' : 'text-slate-300 hover:text-slate-500 dark:text-slate-600'}">
@@ -101,7 +190,7 @@ export class ThreadList extends BaseElement {
   }
 
   private renderMenu({ x, y, t }: { x: number; y: number; t: ThreadSummary }) {
-    const unread = t.tags.includes('unread'), starred = t.tags.includes('flagged'), inbox = t.tags.includes('inbox')
+    const unread = t.tags.includes('unread'), starred = t.tags.includes('flagged'), inbox = t.tags.includes('inbox'), spam = t.tags.includes('spam')
     const item = (icon: string, text: string, act: (e: Event) => void) => html`
       <button role="menuitem" class="flex w-full items-center gap-3 px-3 py-1.5 text-left text-sm hover:bg-slate-100 focus:bg-slate-100 focus:outline-none dark:hover:bg-slate-700 dark:focus:bg-slate-700"
               @click=${act}><i class="${fa(icon)} w-4 text-center text-slate-500"></i>${text}</button>`
@@ -117,12 +206,15 @@ export class ThreadList extends BaseElement {
            }}
            class="fixed z-50 w-60 rounded-lg border border-slate-200 bg-white py-1 shadow-xl dark:border-slate-700 dark:bg-slate-800">
         ${item('up-right-from-square', 'Open', () => { this.menu = null; this.emit('open-thread', { id: t.thread }) })}
-        ${inbox ? item('box-archive', 'Archive', tagging([], ['inbox'])) : item('inbox', 'Move to Inbox', tagging(['inbox'], ['deleted', 'spam']))}
+        ${inbox ? item('box-archive', 'Archive', tagging([], ['inbox'])) : spam ? '' : item('inbox', 'Move to Inbox', tagging(['inbox'], ['deleted', 'spam']))}
         ${item(unread ? 'envelope-open' : 'envelope', unread ? 'Mark as read' : 'Mark as unread', tagging(unread ? [] : ['unread'], unread ? ['unread'] : []))}
         ${item('star', starred ? 'Remove star' : 'Star', tagging(starred ? [] : ['flagged'], starred ? ['flagged'] : []))}
         ${item('trash', 'Delete', tagging(['deleted'], ['inbox']))}
-        ${item('ban', 'Report spam', tagging(['spam'], ['inbox']))}
+        ${spam
+          ? item('circle-check', 'Not spam', tagging(['inbox'], ['spam']))
+          : item('ban', 'Report spam', tagging(['spam'], ['inbox']))}
         <hr class="my-1 border-slate-200 dark:border-slate-700">
+        ${item('tags', 'Labels…', e => this.openLabels(e, t))}
         ${item('filter', 'Filter messages like this…', () => { this.menu = null; this.emit('filters', { thread: t.thread }) })}
       </div>`
   }
@@ -130,6 +222,7 @@ export class ThreadList extends BaseElement {
   render() {
     return html`
       ${this.menu ? this.renderMenu(this.menu) : ''}
+      ${this.labels ? this.renderLabels() : ''}
       <div class="h-full overflow-y-auto" @scroll=${this.closeMenu}>
         ${this.error ? html`<p class="m-4 rounded-lg bg-red-50 p-3 text-sm text-red-700 dark:bg-red-950 dark:text-red-300"><i class="${fa('triangle-exclamation')}"></i> ${this.error}</p>` : ''}
         <ul>${repeat(this.results, t => t.thread, (t, i) => this.row(t, i))}</ul>

@@ -35,22 +35,23 @@ server/                         Bun, TypeScript run directly; imports use .ts ex
   index.ts      HTTP: route table (route('GET', '/api/x/:id', h)), JSON helpers, static dist/ with SPA fallback,
                 optional Basic auth (MAIL_USER/MAIL_PASSWORD), startup `notmuch new`, SYNC_INTERVAL timer, proton.boot()
   exec.ts       exec(bin, args, input?, {timeout, env, onStdout}) — spawn with an argv, never a shell; ExecError {code, stderr}
-  notmuch.ts    the notmuch CLI: search/count/tags/show/reply/tag/insert/new (--format-version=5, queries after `--`),
+  notmuch.ts    the notmuch CLI: search/count (countMany = `count --batch`)/tags/show/reply/tag/insert/new (--format-version=5, queries after `--`),
                 idQuery()/threadQuery(), config get/set (file AND --database), identities()/setIdentities()/addIdentity() (/config/identities.json, mirrored into user.*),
                 ignore(pattern), prepareForLieer(), tagNew(rules), BadRequest (→ HTTP 400)
-  mail.ts       sync(): one run at a time through exclusive() (lieer, mbsync and notmuch must not overlap):
-                gmail.syncAll (gmi push for every account, then gmi pull for every one) → imap.syncAll(proton.skipReason) → notmuch new → tagNew(imap.newMailRules())
-                → filters.runNew() (afew) → doneNew() (−new);
-                schedulePush() (tags → Gmail after 5 s); send(): nodemailer streamTransport composes, then the From
+  mail.ts       exclusive(what, fn, {urgent}): one job at a time (lieer, mbsync and notmuch must not overlap); urgent
+                jobs (fetching mail) go ahead of waiting non-urgent ones (pushes). sync() (urgent): gmail.pullAll →
+                imap.syncAll(proton.skipReason) → notmuch new → tagNew(imap.newMailRules()) → filters.runNew() (afew) →
+                doneNew() (−new), then queues a push; schedulePush() (tags → Gmail after 5 s; one waiting push at a
+                time; gmail.pushAll stops between accounts when a fetch is waiting); send(): nodemailer streamTransport composes, then the From
                 address picks gmail.send / imap.send; withoutBcc()
   activity.ts   what is running now: begin(what, {waiting}) → {set(detail), end()}, track(what, fn); GET /api/activity.
                 exclusive(what, fn) shows queued work as waiting; gmail/imap/notmuch/afew steps and Bridge syncs are tracked
   filters.ts    filters (query → add/remove tags): /config/filters.json → generated /config/afew/config
                 ([Filter.N] sections); runNew() = `afew --tag --new` with XDG_CONFIG_HOME=/config; save(apply)
                 also `notmuch tag`s the mail matching now
-  gmail.ts      lieer accounts in /mail/gmail/<address>/: our own OAuth (PKCE, loopback redirect to the SPA) writes
+  gmail.ts      pullAll() / pushAll(yieldTo); lieer accounts in /mail/gmail/<address>/: our own OAuth (PKCE, loopback redirect to the SPA) writes
                 .credentials.gmailieer.json; `gmi init --no-auth`, `gmi set --local-trash-tag deleted --ignore-tags-local new`,
-                `gmi push|pull|send -t` (push all before pulling any: a first download can take hours); run with
+                `gmi pull|push|send -t` (each step for all accounts: a first download can take hours); run with
                 --no-progress (not --quiet): lieerProgress() turns `phase (N) ...` + a dot per 10 items into activity detail
                 ("receiving metadata: 14,320 of 209,444 (7%)") and logs the lines; lieerError() turns tracebacks into one line
   imap.ts       IMAP/SMTP accounts: /config/accounts.json + /config/passwords/<id>.{imap,smtp} (0600) → generated
@@ -64,8 +65,15 @@ server/                         Bun, TypeScript run directly; imports use .ts ex
 src/
   main.ts       imports virtual:spinal-lift.css (document-side fonts/@property) and <mail-app>
   api.ts        typed fetch wrappers for every /api route; types.ts = notmuch JSON + API types
-  body.ts       choosing parts (leaves(), attachments(), cidMap()), plainText()/htmlToText(), prepareHtml() (sanitise +
-                cid: + remote-image blocking + CSP for the iframe)
+  body.ts       choosing parts (leaves(), attachments(), cidMap(), calendarPart()), plainText()/htmlToText(), prepareHtml() (sanitise +
+                cid: + remote-image blocking + CSP for the iframe), sanitizeHtml(); outgoing: originalHtml() (a message as HTML to
+                quote, cid: images → part URLs + PartRefs), replyQuote()/forwardBlock() (Gmail's gmail_quote markup),
+                outgoingHtml() (part URLs back to cid:, data: images → new inline parts), mailText() (the text/plain alternative)
+  editor/main.ts  editor.html's script: Squire on #editor, window.mailEditor (EditorApi) for <mail-rich-editor>; <style>s of
+                quoted mail go to <head> and back out in getHTML()
+  ical.ts       iCalendar invitations: parse() (unfold, params, BEGIN/END), invite() → the event (times via Intl for IANA TZIDs,
+                else the calendar's VTIMEZONE onsets — Outlook's "Pacific Standard Time"), describeRule(), reply() (iTIP METHOD:REPLY),
+                googleCalendarUrl()
   format.ts     dates, displayName(), HIDDEN_TAGS (state tags not shown as labels), humanSize()
   components/
     base.ts         BaseElement: adopts tailwind.css + Font Awesome (?inline) into every shadow root, data-theme from
@@ -77,11 +85,26 @@ src/
                     mail when idle, else a popover of what is running (step, lieer progress, elapsed, waiting) + last sync;
                     new-version modal: its entry chunk (import.meta.url, hashed) ≠ /api/version's → Reload / Not now
                     (checked on focus/visibility and every 5 min; not under Vite dev)
-    sidebar.ts      folders (saved queries), tags, unread counts, Accounts
-    thread-list.ts  results, quick actions, right-click menu (… → "Filter messages like this" = `filters {thread}`); thread-view.ts: a thread, marks read; message.ts: one message
+    sidebar.ts      folders (saved queries), tags ("receipts (3)", bold while unread), unread counts — all in one
+                    /api/count request (server: one `notmuch count --batch`), Accounts. A tag's right-click menu: mark all
+                    read, unread only, archive all in inbox, rename (to an existing tag = merge), remove label — through
+                    /api/tag, with a confirm over 50 threads. In Gmail a renamed/removed label stays, empty: lieer never
+                    deletes labels
+    thread-list.ts  results, quick actions, right-click menu (Report spam ⇄ Not spam = +inbox −spam; Labels… = a panel of
+                    ticks for every non-state tag, filter/create, Apply = one `notmuch tag` of the difference;
+                    … → "Filter messages like this" = `filters {thread}`); thread-view.ts: a thread, marks read; message.ts: one message
                     (headers, text with folded quotes, HTML in a sandboxed iframe, attachments, reply/forward, tags; a ⋮ menu by
                     the date: reply, reply all, forward, add tag — tags are comma-separated, spaces allowed)
-    compose.ts      docked compose windows (From = notmuch identities), attachments as base64
+    invite.ts       <mail-invite>, the card above a message with text/calendar or an .ics: date tile, time (and the organizer's own
+                    zone's), repeat rule, location + Join (Meet/Teams/Zoom link), guests and their answers; Yes/Maybe/No mails a
+                    REPLY to the organizer (api.send icalEvent → nodemailer's text/calendar;method=REPLY + invite.ics); our answer =
+                    a later REPLY of ours in the thread, else our PARTSTAT; REPLY mail → one line, CANCEL → struck out
+    compose.ts      docked compose windows (From = notmuch identities), attachments as base64; body = <mail-rich-editor>, sent as
+                    html + mailText() alternative. Like Gmail: a reply's quote (the original's HTML as it was) is folded behind ⋯
+                    and sent anyway; ⋯ puts it in the body. A forward has the original in the body and its attachments as chips.
+                    The original's parts go as `parts` refs ({message, part, cid}) — the server attaches them from notmuch;
+                    inline images only while the HTML still refers to them. Minimising hides (keeps the editor)
+    rich-editor.ts  <mail-rich-editor>: toolbar + <iframe src="/editor.html"> running Squire (squire-rte)
     accounts.ts     the Accounts dialog: Gmail (OAuth + paste fallback), <mail-proton>, IMAP list + <mail-imap-form>
     filters.ts      the Filters dialog: list, and a form (From/To/Subject/words → query, live count, actions
                     ⇄ add/remove tags, apply to existing); with `thread` it opens on a filter prefilled from it
@@ -145,8 +168,25 @@ All via `this.emit()` (bubbles, composed — they cross shadow roots): `search {
   every time. `container/gmi` (on PATH before /usr/bin/gmi) empties httplib2's pool before push_changes(); the
   requests carry the client's http, so it is emptied in place. lieer saves its push point (`lastmod`) only when
   every change went through — a change made in Gmail meanwhile means a full re-review next time (`--force` pushes
-  over it). A full pull sets `lastmod`; a partial pull does not. A notmuch writer during a long push can break its
+  over it). A full pull sets `lastmod`; a partial pull does not. **Pull before push**: a partial pull rewrites
+  only messages changed in Gmail, and for those Gmail wins either way (push skips them: "remote has changed, will not
+  update", and then saves no `lastmod`) — so pulling first loses nothing, gets new mail in without waiting on pushes,
+  and the push right after meets few such skips. Never `gmi push --limit`: it saves `lastmod` for the whole range. A notmuch writer during a long push can break its
   read snapshot (XapianError) — keep the database quiet for big pushes.
+- **The editor is Squire in its own page** (`editor.html`, a second Vite entry — `build.rolldownOptions.input`). Squire
+  uses the global window/document (`window.getSelection()`), so it cannot work in a shadow root or drive another frame;
+  the frame also keeps quoted mail's CSS off the app. Its CSP (`script-src 'self'`, `img-src 'self' data: blob:`) is the
+  guard for quoted HTML: nothing inline runs, remote images are not fetched (they are still sent). main.ts adds that CSP
+  meta itself before any content arrives, with `https: http:` for images/styles/fonts when the frame is `?remote`:
+  "Show them" in compose reloads the frame so, carrying the body over (a meta CSP can only tighten once there); a
+  reply/forward of a message whose images were shown starts that way (`Draft.remoteImages`). `no-referrer`. Keys inside the frame
+  don't reach the app: Ctrl+Enter/Escape are forwarded as `submit`/`escape`. Quill was tried first and dropped: its
+  model flattens tables, styles and layout, so forwards lost the original.
+- Invitations: the ORGANIZER gets the REPLY; its ATTENDEE must be the address that was invited (matched against the
+  identities, else ours among To/Cc/Delivered-To). Keep UID/SEQUENCE/RECURRENCE-ID/DTSTART and the VTIMEZONEs used.
+- `search.exclude_tags` (deleted, spam) apply to `notmuch show` too: a thread whose every message is excluded matches
+  nothing and opens empty. `showThread()` passes `--exclude=false`; lists keep the exclusion (an explicit `tag:spam`
+  overrides it). Shows by `id:` (parts, raw, reply) are not affected.
 - Shell heredocs that write config (`entrypoint.sh`): no backticks in the text — they run.
 - **Proton/gRPC**: the `bytes` password fields hold base64 *text* — send `Buffer.from(base64String)`, not the string
   (protobufjs would decode it). The gRPC/IMAP cert is for IP 127.0.0.1: name the channel `localhost` and check the cert
@@ -173,5 +213,14 @@ No test suite; `pnpm check` plus end-to-end runs of the image:
   and fail with `invalid_grant` (proves the format). A real sign-in is not yet exercised.
 - **Filters**: in the GreenMail setup, `POST /api/filters` with `apply:true` tags what is there; mail sent after it
   and synced is tagged by afew; a `-unread` filter must show up as the `S` maildir flag.
+- **Forward/reply**: a synthetic HTML newsletter (a `<style>`, a table, a cid image, a PDF, an onclick/javascript:/script,
+  a remote pixel): forward → the sent HTML keeps style and table, the image keeps its Content-ID, the PDF is attached, the
+  active content is gone; reply without ⋯ → the quote and its image go; ⋯ and delete the table → the image part is dropped.
+  The frame's log shows the pixel blocked by CSP. Clear the browser cache (CDP `Network.clearBrowserCache`) after a build.
+- **Invitations / rich compose**: in the GreenMail setup, drop synthetic .eml invites (Outlook-style Windows TZID +
+  VTIMEZONE, Google-style IANA + invite.ics, CANCEL, REPLY, an .ics-only all-day PUBLISH) into `/mail/local/new`, restart
+  (startup `notmuch new`); click Yes and Reply over CDP, then `notmuch show --format=raw tag:sent` — the RSVP has
+  `text/calendar; method=REPLY`, the reply `multipart/alternative`, a pasted image `multipart/related` with a Content-ID.
+  In CDP, a shadow root hides its host: query each host's `shadowRoot`, not `'host descendant'`.
 - **UI**: headless Chromium screenshots, or a small CDP script (`--remote-debugging-port`, Runtime.evaluate with a
   deep querySelector through shadow roots, Page.captureScreenshot) to click through dialogs.

@@ -1,4 +1,4 @@
-import type { Message, Part } from './types.ts'
+import type { Message, Part, PartRef } from './types.ts'
 
 /**
  * Picking what to show from a notmuch message body: which part of an alternative,
@@ -83,6 +83,18 @@ export function htmlToText(html: string) {
 
 const REMOTE = /^(https?:)?\/\//i
 
+/** drop active content: scripts, frames, plugins, forms, handlers, javascript: URLs (stylesheet links only if `links`) */
+export function sanitizeHtml(doc: Document, links = false) {
+  doc.querySelectorAll(`script, noscript, iframe, frame, frameset, object, embed, applet, base, form, meta, title, ${links ? 'link:not([rel~=stylesheet])' : 'link'}`)
+    .forEach(e => e.remove())
+  for (const el of doc.querySelectorAll<HTMLElement>('*')) {
+    for (const attr of [...el.attributes]) {
+      if (/^on/i.test(attr.name)) el.removeAttribute(attr.name)
+      else if (/^\s*(javascript|vbscript):/i.test(attr.value)) el.removeAttribute(attr.name)
+    }
+  }
+}
+
 /**
  * Make an email's HTML fit for a sandboxed iframe (no scripts run there anyway —
  * the sandbox has no allow-scripts): drop active content, point cid: images at the
@@ -91,13 +103,9 @@ const REMOTE = /^(https?:)?\/\//i
  */
 export function prepareHtml(html: string, cid: (id: string) => string | undefined, remote: boolean) {
   const doc = new DOMParser().parseFromString(html, 'text/html')
-  doc.querySelectorAll('script, iframe, frame, frameset, object, embed, applet, base, form, meta[http-equiv], link:not([rel~=stylesheet])').forEach(e => e.remove())
+  sanitizeHtml(doc, true)
   let blocked = false
   for (const el of doc.querySelectorAll<HTMLElement>('*')) {
-    for (const attr of [...el.attributes]) {
-      if (/^on/i.test(attr.name)) el.removeAttribute(attr.name)
-      else if (/^\s*javascript:/i.test(attr.value)) el.removeAttribute(attr.name)
-    }
     for (const name of ['src', 'background', 'poster']) {
       const v = el.getAttribute(name)
       if (!v) continue
@@ -121,4 +129,128 @@ export function prepareHtml(html: string, cid: (id: string) => string | undefine
   const head = `<meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="${csp}"><base target="_blank">` +
     `<style>html{color-scheme:light}body{margin:0;padding:4px;font:14px/1.5 system-ui,sans-serif;color:#1e293b;background:#fff;overflow-wrap:anywhere}img{max-width:100%;height:auto}pre{white-space:pre-wrap}</style>`
   return { srcdoc: `<!doctype html><html><head>${head}${doc.head.innerHTML}</head><body>${doc.body.innerHTML}</body></html>`, blocked }
+}
+
+/** a calendar invitation's part: text/calendar (inline, with its content) or an .ics attachment (fetched) */
+export const calendarPart = (m: Pick<Message, 'body'>) => {
+  const parts = [...walk(m.body)]
+  return parts.find(p => p['content-type'].toLowerCase() === 'text/calendar' && typeof p.content === 'string')
+    ?? parts.find(p => /^(text\/calendar|application\/ics)$/i.test(p['content-type']) || /\.ics$/i.test(p.filename ?? ''))
+}
+
+/** outgoing HTML → its text/plain alternative: quotes as `> `, list items as `- `, links as `text <url>` */
+export function mailText(html: string): string {
+  const doc = new DOMParser().parseFromString(html, 'text/html')
+  const block = new Set(['P', 'DIV', 'LI', 'PRE', 'H1', 'H2', 'H3', 'H4', 'TR', 'BLOCKQUOTE', 'OL', 'UL'])
+  const walk = (n: Node): string => {
+    if (n.nodeType === Node.TEXT_NODE) return n.textContent ?? ''
+    if (!(n instanceof Element)) return ''
+    if (['STYLE', 'SCRIPT', 'HEAD', 'TITLE'].includes(n.tagName)) return ''
+    if (n.tagName === 'BR') return '\n'
+    if (n.tagName === 'IMG') return n.getAttribute('alt') ? `[${n.getAttribute('alt')}]` : ''
+    let s = [...n.childNodes].map(walk).join('')
+    if (n.tagName === 'A') {
+      const href = n.getAttribute('href') ?? ''
+      if (href && href !== s && `mailto:${s}` !== href) s = `${s} <${href}>`
+    }
+    if (n.tagName === 'LI') s = `${n.parentElement?.tagName === 'OL' ? `${[...n.parentElement.children].indexOf(n) + 1}.` : '-'} ${s}`
+    if (n.tagName === 'BLOCKQUOTE') s = s.replace(/\n+$/, '').split('\n').map(l => (l.startsWith('>') ? `>${l}` : `> ${l}`)).join('\n')
+    if (n.tagName === 'TD' || n.tagName === 'TH') return `${s.trim()} `
+    return block.has(n.tagName) ? `${s.replace(/\n+$/, '')}\n` : s
+  }
+  return walk(doc.body).replace(/ /g, ' ').replace(/\n{3,}/g, '\n\n').trim() + '\n'
+}
+
+export const escapeHtml = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
+
+/** plain text as editor HTML: one paragraph per line */
+export const textToHtml = (text: string) =>
+  text.replace(/\r\n/g, '\n').split('\n').map(l => `<p>${l ? escapeHtml(l) : '<br>'}</p>`).join('')
+
+// ── replying and forwarding with the original as it was (Gmail's markup) ──────────────────
+
+
+/**
+ * A message's body as HTML to quote: its HTML parts (sanitised, <style>s kept, cid:
+ * images pointing at their parts so the editor shows them), text parts as lines,
+ * attached messages with their headers. `parts` are the inline images it refers to.
+ */
+export function originalHtml(m: Message, partUrl: (part: number) => string): { html: string; parts: PartRef[] } {
+  const byCid = new Map<string, Part>()
+  for (const p of walk(m.body)) if (p['content-id']) byCid.set(p['content-id'].replace(/^<|>$/g, ''), p)
+  const parts: PartRef[] = []
+  const render = (l: Leaf): string => {
+    switch (l.kind) {
+      case 'text': return `<div>${escapeHtml(l.text).replace(/\r?\n/g, '<br>')}</div>`
+      case 'note': return `<div><i>${escapeHtml(l.text)}</i></div>`
+      case 'message': return `<div>${['From', 'Date', 'Subject', 'To'].filter(k => l.headers[k]).map(k => `${k}: ${escapeHtml(l.headers[k])}`).join('<br>')}<br><br>${l.body.map(render).join('')}</div>`
+      case 'html': {
+        const doc = new DOMParser().parseFromString(l.html, 'text/html')
+        sanitizeHtml(doc)
+        for (const img of doc.querySelectorAll<HTMLElement>('[src^="cid:" i], [background^="cid:" i]')) {
+          for (const attr of ['src', 'background']) {
+            const v = img.getAttribute(attr)
+            if (!v || !/^cid:/i.test(v)) continue
+            const cid = decodeURIComponent(v.slice(4))
+            const p = byCid.get(cid)
+            if (!p) continue
+            const url = partUrl(p.id)
+            if (!parts.some(x => x.cid === cid)) parts.push({ message: m.id, part: p.id, filename: p.filename ?? cid, contentType: p['content-type'], size: p['content-length'], cid, url })
+            img.setAttribute(attr, url)
+          }
+        }
+        const styles = [...doc.querySelectorAll('style')].map(s => s.outerHTML).join('')
+        doc.querySelectorAll('style').forEach(s => s.remove())
+        return styles + doc.body.innerHTML
+      }
+    }
+  }
+  return { html: leaves(m.body, true).map(render).join(''), parts }
+}
+
+/** a reply's quote: "On …, … wrote:" and the original in a blockquote */
+export const replyQuote = (attribution: string, original: string) =>
+  `<div class="gmail_quote"><div dir="ltr" class="gmail_attr">${escapeHtml(attribution)}<br></div>` +
+  `<blockquote class="gmail_quote" style="margin:0px 0px 0px 0.8ex;border-left:1px solid rgb(204,204,204);padding-left:1ex">${original}</blockquote></div>`
+
+/** a forward: the original's headers, then the original */
+export function forwardBlock(headers: Record<string, string>, original: string) {
+  const from = headers.From ?? ''
+  const name = from.replace(/<[^>]*>/, '').replace(/"/g, '').trim()
+  const addr = from.match(/<[^>]*>/)?.[0] ?? ''
+  const rows = [
+    `From: ${name && addr ? `<strong class="gmail_sendername" dir="auto">${escapeHtml(name)}</strong> <span dir="auto">${escapeHtml(addr)}</span>` : escapeHtml(from)}`,
+    ...['Date', 'Subject', 'To', 'Cc'].filter(k => headers[k]).map(k => `${k}: ${escapeHtml(headers[k])}`),
+  ]
+  return `<div class="gmail_quote"><div dir="ltr" class="gmail_attr">---------- Forwarded message ---------<br>${rows.join('<br>')}<br></div><br><br>${original}</div>`
+}
+
+/**
+ * The HTML to send: part URLs of quoted inline images back to their cid:, pasted
+ * images (data:) to new inline parts. Returns what the HTML still refers to.
+ */
+export function outgoingHtml(html: string, parts: PartRef[]) {
+  const doc = new DOMParser().parseFromString(html, 'text/html')
+  const used: PartRef[] = []
+  const images: { cid: string; filename: string; contentType: string; content: string }[] = []
+  const stamp = Date.now().toString(36)
+  for (const el of doc.querySelectorAll<HTMLElement>('[src], [background]')) {
+    for (const attr of ['src', 'background']) {
+      const v = el.getAttribute(attr)
+      if (!v) continue
+      const ref = parts.find(p => p.cid && p.url === v)
+      if (ref) {
+        el.setAttribute(attr, `cid:${ref.cid}`)
+        if (!used.includes(ref)) used.push(ref)
+        continue
+      }
+      const m = v.match(/^data:([^;,]+)(?:;[^,]*)?;base64,(.*)$/s)
+      if (!m) continue
+      const cid = `image${images.length + 1}.${stamp}@drewcmail`
+      images.push({ cid, filename: `image${images.length + 1}.${(m[1].split('/')[1] ?? 'png').replace('jpeg', 'jpg')}`, contentType: m[1], content: m[2] })
+      el.setAttribute(attr, `cid:${cid}`)
+    }
+  }
+  const styles = [...doc.head.querySelectorAll('style')].map(s => s.outerHTML).join('')
+  return { html: styles + doc.body.innerHTML, used, images }
 }

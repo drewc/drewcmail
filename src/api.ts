@@ -29,7 +29,7 @@ export const api = {
   thread: (id: string) => call<ShowResult>('GET', `/api/thread/${id}`),
   reply: (id: string, to: 'all' | 'sender' = 'all') => call<ReplyTemplate>('GET', `/api/message/${mid(id)}/reply?to=${to}`),
   tag: (query: string, add: string[] = [], remove: string[] = []) => call<{ ok: true }>('POST', '/api/tag', { query, add, remove }),
-  send: (draft: Draft & { from: string; attachments?: { filename: string; contentType: string; content: string }[] }) =>
+  send: (draft: Omit<Draft, 'quote' | 'parts' | 'remoteImages'> & { from: string; attachments?: { filename: string; contentType: string; content: string; cid?: string }[]; icalEvent?: { method: string; content: string }; parts?: { message: string; part: number; cid?: string }[] }) =>
     call<{ messageId: string }>('POST', '/api/send', draft),
   syncState: () => call<SyncState>('GET', '/api/sync'),
   activity: () => call<{ activity: Activity[]; sync: SyncState }>('GET', '/api/activity'),

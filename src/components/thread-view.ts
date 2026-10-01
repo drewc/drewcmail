@@ -4,7 +4,7 @@ import { repeat } from 'lit/directives/repeat.js'
 import { BaseElement, fa } from './base.ts'
 import { api, threadQuery } from '../api.ts'
 import { HIDDEN_TAGS } from '../format.ts'
-import type { Message, ThreadNode } from '../types.ts'
+import type { Identity, Message, ThreadNode } from '../types.ts'
 import './message.ts'
 import type { MailMessage } from './message.ts'
 
@@ -19,6 +19,7 @@ const flatten = (nodes: ThreadNode[], depth = 0): { m: Message; depth: number }[
 @customElement('mail-thread-view')
 export class ThreadView extends BaseElement {
   @property() threadId = ''
+  @property({ attribute: false }) identities: Identity[] = []
   @state() private messages: { m: Message; depth: number }[] = []
   @state() private error = ''
   @state() private loading = false
@@ -71,6 +72,7 @@ export class ThreadView extends BaseElement {
     const first = this.messages[0]?.m
     const tags = [...new Set(this.messages.flatMap(({ m }) => m.tags))]
     const inInbox = tags.includes('inbox')
+    const thread = this.messages.map(({ m }) => m)
     const btn = 'rounded-lg px-2.5 py-1.5 text-slate-500 hover:bg-slate-100 hover:text-slate-800 dark:hover:bg-slate-700 dark:hover:text-slate-100'
     return html`
       <div class="flex h-full flex-col">
@@ -79,7 +81,9 @@ export class ThreadView extends BaseElement {
           ${inInbox
             ? html`<button class="${btn}" title="Archive (e)" @click=${() => this.tagThread([], ['inbox'], 'Archived', true)}><i class="${fa('box-archive')}"></i></button>`
             : html`<button class="${btn}" title="Move to inbox" @click=${() => this.tagThread(['inbox'], ['deleted', 'spam'], 'Moved to inbox')}><i class="${fa('inbox')}"></i></button>`}
-          <button class="${btn}" title="Spam (!)" @click=${() => this.tagThread(['spam'], ['inbox'], 'Marked as spam', true)}><i class="${fa('ban')}"></i></button>
+          ${tags.includes('spam')
+            ? html`<button class="${btn}" title="Not spam" @click=${() => this.tagThread(['inbox'], ['spam'], 'Moved to inbox — not spam')}><i class="${fa('circle-check')}"></i></button>`
+            : html`<button class="${btn}" title="Spam (!)" @click=${() => this.tagThread(['spam'], ['inbox'], 'Marked as spam', true)}><i class="${fa('ban')}"></i></button>`}
           <button class="${btn}" title="Delete (#)" @click=${() => this.tagThread(['deleted'], ['inbox'], 'Moved to trash', true)}><i class="${fa('trash')}"></i></button>
           <button class="${btn}" title="Mark unread (U)" @click=${() => this.tagThread(['unread'], [], 'Marked unread', true)}><i class="${fa('envelope')}"></i></button>
         </div>
@@ -94,7 +98,7 @@ export class ThreadView extends BaseElement {
             </h1>` : nothing}
           <div class="mx-2 mb-8 divide-y divide-slate-200 rounded-xl border border-slate-200 bg-white dark:divide-slate-700 dark:border-slate-700 dark:bg-slate-800/40">
             ${repeat(this.messages, ({ m }) => m.id, ({ m, depth }) => html`
-              <mail-message .message=${m} ?open=${this.opened.has(m.id)} style="margin-left: ${Math.min(depth, 6) * 12}px"
+              <mail-message .message=${m} .thread=${thread} .identities=${this.identities} ?open=${this.opened.has(m.id)} style="margin-left: ${Math.min(depth, 6) * 12}px"
                             @click=${() => this.opened.add(m.id)}></mail-message>`)}
           </div>
         </div>

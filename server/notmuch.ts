@@ -36,12 +36,21 @@ export async function count(query: string, output: 'messages' | 'threads' = 'thr
   return Number((await exec(NOTMUCH, ['count', `--output=${output}`, '--', query || '*'])).toString().trim())
 }
 
+/** many counts in one process: `count --batch` reads one query per line and answers one count per line, in order */
+export async function countMany(queries: string[], output: 'messages' | 'threads' = 'threads') {
+  if (queries.some(q => /[\r\n]/.test(q))) throw new BadRequest('a query has a line break')
+  if (!queries.length) return []
+  const out = (await exec(NOTMUCH, ['count', '--batch', `--output=${output}`], Buffer.from(queries.map(q => q || '*').join('\n') + '\n'))).toString().trim()
+  return out.split('\n').map(Number)
+}
+
 export function tags() {
   return json<string[]>(['search', '--format=json', '--output=tags', '--', '*'])
 }
 
+/** a thread, whole — search.exclude_tags do not apply: a thread all spam or trash would otherwise come back empty */
 export function showThread(threadId: string) {
-  return json<unknown>(['show', ...FORMAT, '--entire-thread=true', '--include-html', '--', threadQuery(threadId)])
+  return json<unknown>(['show', ...FORMAT, '--entire-thread=true', '--exclude=false', '--include-html', '--', threadQuery(threadId)])
 }
 
 /** one part's JSON (content-type, filename, …) — without its content for non-text parts */

@@ -13,6 +13,8 @@ export default defineConfig(({ command }) => ({
     // the server is not part of the page (container/dev-server.ts restarts it)
     watch: { ignored: ['**/server/**', '**/container/**'] },
   },
+  // editor.html: the compose body's frame (src/editor/main.ts)
+  build: { rolldownOptions: { input: { main: 'index.html', editor: 'editor.html' } } },
   plugins: [
     tailwindcss(),
     cssShadowDOM({ command }),

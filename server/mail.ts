@@ -18,53 +18,86 @@ export type SyncState = { running: boolean; last?: string; ok?: boolean; error?:
 export const syncState: SyncState = { running: false }
 
 /**
- * lieer and notmuch must not run over each other: everything that touches the database
- * queues here — shown as waiting (`what`) until its turn
+ * lieer, mbsync and notmuch must not run over each other: everything that touches the
+ * database queues here, shown as waiting (`what`) until its turn. Fetching mail is
+ * `urgent`: it goes ahead of anything still waiting that is not (tag pushes) — new mail
+ * matters more than Gmail seeing tags a little later. Nothing running is interrupted
+ * (a push stopped half-way saves no push point: the next one starts over).
  */
-let queue: Promise<unknown> = Promise.resolve()
-function exclusive<T>(what: string, fn: () => Promise<T>): Promise<T> {
-  const waiting = activity.begin(what, { waiting: true })
-  const start = () => { waiting.end(); return fn() }
-  const run = queue.then(start, start)
-  queue = run.catch(() => {})
-  return run
+type Job = { urgent: boolean; start: () => Promise<void> }
+const jobs: Job[] = []
+let busy = false
+
+function exclusive<T>(what: string, fn: () => Promise<T>, { urgent = false } = {}): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const waiting = activity.begin(what, { waiting: true })
+    const job: Job = { urgent, start: () => { waiting.end(); return fn().then(resolve, reject) } }
+    const at = urgent ? jobs.findIndex(j => !j.urgent) : -1
+    if (at < 0) jobs.push(job)
+    else jobs.splice(at, 0, job)
+    void drain()
+  })
 }
+
+async function drain() {
+  if (busy) return
+  busy = true
+  while (jobs.length) await jobs.shift()!.start()
+  busy = false
+}
+
+/** a fetch is waiting: a push between accounts stops for it */
+const mailWaiting = () => jobs.some(j => j.urgent)
 
 let current: Promise<SyncState> | null = null
 
-/** fetch (Gmail, then IMAP) and index; concurrent calls share one run */
+/**
+ * Fetch (Gmail pulls, then IMAP) and index — the mail first; the tag push to Gmail is
+ * queued after it, as its own job that the next fetch goes ahead of. Concurrent calls
+ * share one run.
+ */
 export function sync({ fetch = true } = {}): Promise<SyncState> {
   current ??= exclusive('Sync', async () => {
     syncState.running = true
     const errors: string[] = []
     if (fetch) {
-      await gmail.syncAll().catch(e => errors.push((e as Error).message))
+      await gmail.pullAll().catch(e => errors.push((e as Error).message))
       await imap.syncAll(proton.skipReason).catch(e => errors.push((e as Error).message))
     }
     try {
       await activity.track('Indexing new mail (notmuch new)', () => notmuch.indexNew())
       await activity.track('Tagging new mail', async () => notmuch.tagNew(await imap.newMailRules()))
       // the user's filters (afew) see fresh mail after the folder rules and before it stops being new
-      const filtered = await activity.track('Filters (afew)', () => filters.runNew())
+      await activity.track('Filters (afew)', () => filters.runNew())
         .catch(e => { errors.push(`filters: ${(e as Error).message}`); return false })
-      if (filtered) schedulePush()
       await notmuch.doneNew()
     } catch (e) { errors.push((e as Error).message) }
     Object.assign(syncState, { running: false, last: new Date().toISOString(), ok: !errors.length, error: errors.join('\n') || undefined })
     current = null
+    // tags changed here (and in the UI meanwhile) go to Gmail now, behind any fetch asked for since
+    if (fetch) void queuePush()
     return { ...syncState }
-  })
+  }, { urgent: true })
   return current
 }
 
 let pushTimer: NodeJS.Timeout | undefined
 /** tags changed: push them to Gmail soon (batched) */
-export function schedulePush() {
+export function schedulePush(delay = 5000) {
   clearTimeout(pushTimer)
-  pushTimer = setTimeout(() => {
-    exclusive('Push tag changes to Gmail', async () => { if ((await gmail.accounts()).some(a => a.authorized)) await gmail.syncAll('push') })
-      .catch(e => console.error('gmail push:', (e as Error).message))
-  }, 5000)
+  pushTimer = setTimeout(() => void queuePush(), delay)
+}
+
+/** a push waiting in the queue covers every change made before it starts: one at a time is enough */
+let pushQueued = false
+async function queuePush() {
+  if (pushQueued) return
+  pushQueued = true
+  if (!(await gmail.accounts()).some(a => a.authorized)) { pushQueued = false; return }
+  exclusive('Push tag changes to Gmail', async () => {
+    pushQueued = false
+    await gmail.pushAll(mailWaiting)
+  }).catch(e => console.error('gmail push:', (e as Error).message))
 }
 
 export type Outgoing = {
@@ -74,9 +107,15 @@ export type Outgoing = {
   bcc?: string
   subject?: string
   text?: string
+  /** the rich body; `text` is then its plain alternative */
+  html?: string
   inReplyTo?: string
   references?: string
-  attachments?: { filename: string; contentType?: string; content: string /* base64 */ }[]
+  attachments?: { filename: string; contentType?: string; content: string /* base64 */; cid?: string /* an inline image of the html */ }[]
+  /** parts of messages we have, attached again as they are: a quote's inline images (cid), a forward's attachments */
+  parts?: { message: string; part: number; cid?: string }[]
+  /** an iTIP message (an invitation's REPLY): a text/calendar;method=… alternative, and invite.ics */
+  icalEvent?: { method: string; content: string }
 }
 
 /** the message without its Bcc header (and its folded continuation lines) — for the wire */
@@ -96,13 +135,27 @@ const composer = nodemailer.createTransport({ streamTransport: true, buffer: tru
 export async function send(m: Outgoing) {
   if (!m.from) throw new BadRequest('no From')
   if (!m.to && !m.cc && !m.bcc) throw new BadRequest('no recipients')
+  const again = await Promise.all((m.parts ?? []).map(async p => {
+    if (!Number.isInteger(p.part) || p.part < 1) throw new BadRequest('bad part')
+    const [info, content] = await Promise.all([notmuch.partInfo(p.message, p.part), notmuch.partRaw(p.message, p.part)])
+    return {
+      filename: String(info.filename ?? `part-${p.part}`),
+      contentType: String(info['content-type'] ?? 'application/octet-stream'),
+      content, cid: p.cid || undefined,
+    }
+  }))
   const info = await composer.sendMail({
     from: m.from, to: m.to, cc: m.cc, bcc: m.bcc,
     subject: m.subject ?? '',
     text: m.text ?? '',
+    html: m.html || undefined,
     inReplyTo: m.inReplyTo || undefined,
     references: m.references || undefined,
-    attachments: m.attachments?.map(a => ({ filename: a.filename, contentType: a.contentType, content: Buffer.from(a.content, 'base64') })),
+    attachments: [
+      ...(m.attachments ?? []).map(a => ({ filename: a.filename, contentType: a.contentType, content: Buffer.from(a.content, 'base64'), cid: a.cid || undefined })),
+      ...again,
+    ],
+    icalEvent: m.icalEvent && { method: m.icalEvent.method, content: m.icalEvent.content, filename: 'invite.ics' },
     headers: { 'User-Agent': 'drewcmail' },
   })
   const raw = info.message as Buffer

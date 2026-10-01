@@ -35,6 +35,9 @@ export type Message = {
   body?: Part[]
 }
 
+/** a part of a message we already have, sent again as is: an inline image of quoted HTML (cid), or a forwarded attachment */
+export type PartRef = { message: string; part: number; filename: string; contentType: string; size?: number; cid?: string; url: string }
+
 /** a message and its replies */
 export type ThreadNode = [Message, ThreadNode[]]
 /** `notmuch show` output: a list of threads, each a forest of ThreadNodes */
@@ -58,6 +61,14 @@ export type Draft = {
   cc?: string
   bcc?: string
   subject?: string
+  /** the body: HTML (the editor's), or plain text (turned into paragraphs) */
+  html?: string
+  /** a reply's quoted original, folded away behind ⋯ (sent unless shown and deleted) */
+  quote?: string
+  /** parts of the original sent again: its inline images (cid), a forward's attachments */
+  parts?: PartRef[]
+  /** show the original's remote images in the editor (they were shown in the message) */
+  remoteImages?: boolean
   text?: string
   inReplyTo?: string
   references?: string
